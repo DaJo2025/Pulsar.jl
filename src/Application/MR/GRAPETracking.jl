@@ -185,7 +185,7 @@ function _grape_tracking_cpu_threaded(waveform::Matrix{Float64}, ctrl)
     end
     ckpt_steps = sort(collect(keys(ckpt_map)))
 
-    n_th = Threads.nthreads()
+    n_th = Threads.maxthreadid()
     H_bufs   = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th]
     VD_bufs  = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th]
     Ps_bufs  = [[Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_t] for _ in 1:n_th]
@@ -391,7 +391,7 @@ function _grape_tracking_gpu_kernel(waveform::Matrix{Float64}, ctrl, to_gpu, ::T
     Ps_cpu    = Array{T}(undef, dim, dim, n_outer, n_t)
     PsAdj_cpu = Array{T}(undef, dim, dim, n_outer, n_t)
 
-    n_th  = Threads.nthreads()
+    n_th  = Threads.maxthreadid()
     H_bufs  = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th]
     VD_bufs = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th]
     P_bufs  = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th]

@@ -156,6 +156,11 @@ struct MRControl <: AbstractMRControl
     tracking       :: Vector{TrackingPoint}
     callback       :: Union{Nothing, Function}
     parameterization :: AbstractControlParameterization
+    # Single-spin (dim=2) closed-system state-transfer fast path:
+    #   nothing → auto-detect (default)
+    #   true    → force on (errors if ineligible)
+    #   false   → force off (always use generic kernel)
+    fast_path      :: Union{Nothing, Bool}
 end
 
 """
@@ -222,6 +227,7 @@ function MRControl(;
     tracking                          = TrackingPoint[],
     callback       :: Union{Nothing, Function} = nothing,
     parameterization :: AbstractControlParameterization = PiecewiseConstant(),
+    fast_path      :: Union{Nothing, Bool} = nothing,
 )
     # Normalise rho_init / rho_targ to Vector{Vector{ComplexF64}}
     _wrap(x::Vector{<:Number})           = [ComplexF64.(x)]
@@ -255,6 +261,7 @@ function MRControl(;
         ck,
         callback,
         parameterization,
+        fast_path,
     )
 end
 
@@ -763,6 +770,11 @@ struct LindbladMRControl <: AbstractMRControl
     _L_controls    :: Vector{Matrix{ComplexF64}}   # 𝓛_ctrl[k]  (N²×N²)
     _sigma_init    :: Vector{Vector{ComplexF64}}   # vec(ρ_init[s]) length N²
     _sigma_targ    :: Vector{Vector{ComplexF64}}   # vec(ρ_targ[s]) length N²
+    # Single-spin (dim=2) closed-system Liouville fast path:
+    #   nothing → auto-detect (default)
+    #   true    → force on (errors if ineligible)
+    #   false   → force off (always use generic 4×4 kernel)
+    fast_path      :: Union{Nothing, Bool}
 end
 
 """
@@ -821,6 +833,7 @@ function LindbladMRControl(;
     print_interval :: Int             = 1,
     backend        :: Symbol          = get_device(),
     precision      :: Symbol          = :f64,
+    fast_path      :: Union{Nothing, Bool} = nothing,
 )
     length(jump_ops) == length(decay_rates) ||
         throw(ArgumentError("jump_ops and decay_rates must have the same length " *
@@ -881,6 +894,7 @@ function LindbladMRControl(;
         N, N2,
         _L_drifts, _L_controls,
         sigma_i, sigma_t,
+        fast_path,
     )
 end
 

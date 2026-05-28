@@ -290,6 +290,61 @@ function _gate_gradient_into!(G::Matrix{Float64},
     return G
 end
 
+# ----------------------------------------------------------------------------
+# Metric-aware gate-fidelity gradient
+# ----------------------------------------------------------------------------
+#
+# Same loop kernel as `_gate_gradient_into!`, but the chain-rule factor is
+# selected at compile time via dispatch on `metric::AbstractFidelityMetric`.
+# Used when the user wants a non-`:square` gate metric — `ModulusGate`,
+# `RealGate`, etc. — without rewriting the propagator setup.
+#
+# The "bare" inner product passed to `fidelity_grad_prefactor` is
+#     s_bar = Tr(U_target† Q[k]† H_j P[k]) / dim
+# (no `-i·dt` factor; the prefactor folds in `dt`). For the existing
+# `NormalizedGate` metric this reproduces the `_gate_gradient_into!` formula
+# exactly (verified algebraically: the existing code stores
+# `inner = -i·dt·s/dim` and returns `2 Re(conj(Φ)·inner)`, while the prefactor
+# dispatch returns `2·dt·Im(conj(Φ)·s_bar)` — equal up to sign of i).
+function compute_gradient_gate(U_total::Matrix{ComplexF64},
+                                P::Array{ComplexF64,3},
+                                Q::Array{ComplexF64,3},
+                                H_controls::Vector{Matrix{ComplexF64}},
+                                U_target::Matrix{ComplexF64},
+                                dt::Real,
+                                metric::AbstractFidelityMetric)::Matrix{Float64}
+    dt  = Float64(dt)
+    n_t = size(P, 1) - 1
+    n_c = length(H_controls)
+    dim = size(U_total, 1)
+    G   = zeros(Float64, n_c, n_t)
+
+    Phi = tr(U_target' * U_total) / dim
+
+    U_t_dag = U_target'
+    tmp     = Matrix{ComplexF64}(undef, dim, dim)
+    A_k     = Matrix{ComplexF64}(undef, dim, dim)
+    Pk_buf  = Matrix{ComplexF64}(undef, dim, dim)
+    Qk_buf  = Matrix{ComplexF64}(undef, dim, dim)
+    @inbounds for k in 1:n_t
+        @views copyto!(Pk_buf, P[k, :, :])
+        @views copyto!(Qk_buf, Q[k, :, :])
+        mul!(tmp, Pk_buf, U_t_dag)
+        mul!(A_k, tmp, Qk_buf')
+
+        for j in 1:n_c
+            Hj = H_controls[j]
+            s  = zero(ComplexF64)
+            @inbounds for q in 1:dim, p in 1:dim
+                s += A_k[p, q] * Hj[q, p]
+            end
+            inner_bare = s / dim
+            G[j, k] = fidelity_grad_prefactor(Phi, inner_bare, dt, metric)
+        end
+    end
+    return G
+end
+
 # ============================================================================
 # State transfer fidelity gradient
 # ============================================================================
@@ -393,6 +448,59 @@ function _state_gradient_into!(G::Matrix{Float64},
             Hj = H_controls[j]
             inner   = minus_i_dt * dot(lambda_k, Hj, phi_k)
             G[j, k] = 2.0 * real(conj(chi) * inner)
+        end
+    end
+    return G
+end
+
+# ----------------------------------------------------------------------------
+# Metric-aware state-transfer gradient
+# ----------------------------------------------------------------------------
+#
+# Same kernel as `_state_gradient_into!`, but the chain-rule factor is selected
+# by dispatch on `metric`. For the default `SquaredOverlap` this reproduces
+# `_state_gradient_into!` exactly. For `RealOverlap`, `ModulusOverlap`,
+# `LinearDMFidelity`, `ModulusDMFidelity`, `SquaredDMFidelity` the corresponding
+# typed `fidelity_grad_prefactor` is used.
+function compute_gradient_state(U_total::Matrix{ComplexF64},
+                                 P::Array{ComplexF64,3},
+                                 Q::Array{ComplexF64,3},
+                                 H_controls::Vector{Matrix{ComplexF64}},
+                                 psi_init::Vector{ComplexF64},
+                                 psi_target::Vector{ComplexF64},
+                                 dt::Real,
+                                 metric::AbstractFidelityMetric)::Matrix{Float64}
+    dt  = Float64(dt)
+    n_t = size(P, 1) - 1
+    n_c = length(H_controls)
+
+    nrm_i = norm(psi_init)
+    nrm_t = norm(psi_target)
+    nrm_i < eps(Float64) && throw(ArgumentError("psi_init has zero norm"))
+    nrm_t < eps(Float64) && throw(ArgumentError("psi_target has zero norm"))
+    psi_i = psi_init   / nrm_i
+    psi_t = psi_target / nrm_t
+
+    dim     = length(psi_i)
+    G       = zeros(Float64, n_c, n_t)
+    tmp_vec = Vector{ComplexF64}(undef, dim)
+    mul!(tmp_vec, U_total, psi_i)
+    chi = dot(psi_t, tmp_vec)
+
+    phi_k    = Vector{ComplexF64}(undef, dim)
+    lambda_k = Vector{ComplexF64}(undef, dim)
+    Pk_buf   = Matrix{ComplexF64}(undef, dim, dim)
+    Qk_buf   = Matrix{ComplexF64}(undef, dim, dim)
+    @inbounds for k in 1:n_t
+        @views copyto!(Pk_buf, P[k, :, :])
+        @views copyto!(Qk_buf, Q[k, :, :])
+        mul!(phi_k,    Pk_buf, psi_i)
+        mul!(lambda_k, Qk_buf, psi_t)
+
+        for j in 1:n_c
+            Hj    = H_controls[j]
+            inner = dot(lambda_k, Hj, phi_k)
+            G[j, k] = fidelity_grad_prefactor(chi, inner, dt, metric)
         end
     end
     return G
