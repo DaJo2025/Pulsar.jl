@@ -1,7 +1,7 @@
 name = "Pulsar"
 uuid = "54ac5e6d-f0b9-4c2a-a5c2-b0909a9fa55a"
 authors = ["Pulsar.jl Contributors"]
-version = "0.1.0"
+version = "0.2.0"
 
 [deps]
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
@@ -27,6 +27,18 @@ PulsarZygoteExt = "Zygote"
 
 [compat]
 julia = "1.9"
+Dates = "1"
+Distributed = "1"
+LinearAlgebra = "1"
+Printf = "1"
+Random = "1"
+Serialization = "1"
+SparseArrays = "1"
+Statistics = "1"
+ForwardDiff = "0.10"
+LBFGSB = "0.4"
+Plots = "1"
+Zygote = "0.6, 0.7"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
