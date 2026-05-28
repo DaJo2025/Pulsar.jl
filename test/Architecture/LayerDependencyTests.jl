@@ -52,9 +52,9 @@
         includes = [m.match for m in eachmatch(r"""include\("([^"]+)"\)""", pulsar_jl)]
         paths    = [m.captures[1] for m in eachmatch(r"""include\("([^"]+)"\)""", pulsar_jl)]
 
-        # Files that are intentionally re-ordered out of strict layer sequence.
-        # Each entry depends on a higher-layer file and is therefore included
-        # after that layer.
+        # Files that are intentionally re-ordered out of strict layer sequence;
+        # see CLAUDE.md §1 for the architectural rationale.  Each entry depends
+        # on a higher-layer file and is therefore included after that layer.
         ALLOWED_REORDERINGS = Set([
             "Physics/UncertaintyQuantification.jl",   # depends on Optimization/GRAPE
             "Physics/Sensitivity.jl",                  # depends on Optimization/GRAPE
