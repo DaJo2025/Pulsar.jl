@@ -72,6 +72,9 @@ makedocs(;
             "Utilities"        => "api/utilities.md",
             "Application"      => "api/application.md",
         ],
+        "Release notes" => [
+            "v0.2.0"           => "release_notes/v0.2.0.md",
+        ],
     ],
     warnonly = true,
 )

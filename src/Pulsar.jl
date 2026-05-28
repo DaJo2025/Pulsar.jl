@@ -127,6 +127,9 @@ include("Computation/Propagators.jl")
 include("Computation/PropagatorRegistry.jl")
 include("Computation/PropagatorCache.jl")
 include("Computation/EnsembleMap.jl")
+include("Computation/SU2Propagator.jl")
+include("Computation/SpinIPropagator.jl")
+include("Computation/TrotterPropagator.jl")
 
 # ---------------------------------------------------------------------------
 # Layer 1c: Backend — hardware abstraction (remaining sub-concerns)
@@ -140,6 +143,8 @@ include("Backend/Scheduling/HybridExecution.jl")
 # Layer 2: Physics — objective functions, gradients, open-system models
 # ---------------------------------------------------------------------------
 include("Physics/Objectives.jl")
+include("Physics/SU2Objectives.jl")
+include("Physics/SpinIObjectives.jl")
 include("Physics/Penalties.jl")
 include("Physics/Gradients.jl")
 include("Physics/Lindblad.jl")
@@ -254,6 +259,7 @@ include("Runtime/AlgorithmSelection.jl")
 # Pure utilities
 include("Utilities/ParameterValidation.jl")
 include("Utilities/VisualizationUtilities.jl")
+include("Utilities/SU2DurationSweep.jl")
 # Theme 12 — pulse-spectrum and Bloch-sweep analysis utilities
 include("Utilities/PulseAnalysis.jl")
 # Canonical problem library (single-qubit, two-qubit, INEPT, …)
@@ -435,8 +441,10 @@ export STATE_FIDELITY_TYPES, GATE_FIDELITY_TYPES
 export AbstractFidelityMetric
 export RealOverlap, SquaredOverlap, ModulusOverlap, UhlmannFidelity, LinearDMFidelity
 export NormalizedGate, RealGate, AverageGate
+export ModulusGate, SquaredDMFidelity, ModulusDMFidelity
 export REAL_OVERLAP, SQUARED_OVERLAP, MODULUS_OVERLAP, UHLMANN_FIDELITY, LINEAR_DM
 export NORMALIZED_GATE, REAL_GATE, AVERAGE_GATE
+export MODULUS_GATE, SQUARED_DM, MODULUS_DM
 # Theme 4 — extended fidelity metrics
 export EssentialSubspaceGate, CooperativeTargetFidelity, ProcessTomographyFidelity
 export cooperative_fidelity
@@ -605,6 +613,23 @@ export trust_region_newton_optimize, projected_gradient_optimize
 
 # Gradient-based optimizers — QOC (generic Function dispatch, backward-compatible)
 export grape_optimize, grape_cg_optimize, grape_lbfgsb_optimize
+# SU(2) Cayley-Klein phase-only GRAPE (spin-1/2, constant Rabi, ~50-100x faster than matrix-exp)
+export precompute_su2_params, precompute_su2_params_ensemble, validate_su2_params
+export su2_fidelity_gradient, su2_fidelity_forward, su2_forward_pass!
+export SU2Kernel, su2_fidelity_and_grad
+export grape_su2_optimize, grape_su2_multistart
+export su2_duration_sweep
+
+# Spin-I (arbitrary single spin-I, phase-only)
+export precompute_spinI_params, precompute_spinI_params_ensemble
+export spinI_fidelity_gradient, spinI_fidelity_forward, spinI_forward_pass!
+export SpinIKernel, spinI_fidelity_and_grad
+export grape_spinI_optimize, grape_spinI_multistart
+
+# Trotter (N coupled spin-1/2, Strang-split, phase-only)
+export precompute_trotter_params, trotter_fidelity_gradient, trotter_fidelity_forward
+export TrotterKernel, trotter_fidelity_and_grad
+export grape_trotter_optimize, grape_trotter_multistart
 # Real Krotov (monotonic co-state method; system/target/controls signature)
 export krotov_optimize, krotov_second_order_optimize
 export group_optimize, goat_optimize

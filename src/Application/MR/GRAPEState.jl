@@ -134,6 +134,21 @@ state and no synchronisation needed beyond the final reduction.
   gradient loop: one scratch vector per thread, reused across all `(n, k)`.
 """
 function _grape_cpu(waveform::Matrix{Float64}, ctrl)
+    # Single-spin (dim=2) Bloch-vector fast path. Dispatched when:
+    #   • ctrl.fast_path !== false
+    #   • problem is technically eligible (see _bloch_problem_eligible)
+    # When fast_path === true but problem is ineligible, raise an error.
+    if hasproperty(ctrl, :fast_path) && ctrl.fast_path !== false
+        if _bloch_problem_eligible(ctrl)
+            return _grape_cpu_2x2_bloch(waveform, ctrl)
+        elseif ctrl.fast_path === true
+            throw(ArgumentError(
+                "MRControl: fast_path=true requested but problem is not eligible. " *
+                "Requires single-spin (dim=2), fidelity=:square, no tracking, " *
+                "and pure-Pauli control operators (zero identity component)."))
+        end
+    end
+
     n_ctrl  = size(waveform, 1)
     n_t     = size(waveform, 2)
     n_drift = length(ctrl.drifts)
@@ -152,7 +167,7 @@ function _grape_cpu(waveform::Matrix{Float64}, ctrl)
 
     # ── Pre-allocate per-thread scratch to eliminate hot-loop allocations ─────
     # Indexed by Threads.threadid() (1-based, static scheduler).
-    n_th = Threads.nthreads()
+    n_th = Threads.maxthreadid()
     # Propagator matrices: one pre-allocated [dim×dim] matrix per (thread, step)
     Ps_bufs   = [[Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_t]
                   for _ in 1:n_th]
@@ -299,7 +314,7 @@ function _grape_gpu_kernel(waveform::Matrix{Float64}, ctrl, to_gpu, ::Type{T}) w
     Ps_cpu    = Array{T}(undef, dim, dim, n_outer, n_t)
     PsAdj_cpu = Array{T}(undef, dim, dim, n_outer, n_t)
 
-    n_th_gpu  = Threads.nthreads()
+    n_th_gpu  = Threads.maxthreadid()
     H_bufs_g  = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th_gpu]
     VD_bufs_g = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th_gpu]
     P_bufs_g  = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th_gpu]
@@ -475,7 +490,7 @@ function _fidelity_cpu(waveform, drifts, pwr_levels, operators,
     n_outer   = length(ens_pairs)
     N_ens     = n_outer * n_pairs
 
-    n_th_f   = Threads.nthreads()
+    n_th_f   = Threads.maxthreadid()
     dim_f    = size(drifts[1], 1)
     H_bufs_f = [Matrix{ComplexF64}(undef, dim_f, dim_f) for _ in 1:n_th_f]
     VD_bufs_f= [Matrix{ComplexF64}(undef, dim_f, dim_f) for _ in 1:n_th_f]
@@ -526,7 +541,7 @@ function _fidelity_gpu(waveform, drifts, pwr_levels, operators,
 
     # Build propagators on CPU in parallel, single bulk GPU transfer
     Ps_cpu   = Array{T}(undef, dim, dim, n_outer, n_t)
-    n_th_fg  = Threads.nthreads()
+    n_th_fg  = Threads.maxthreadid()
     H_bfg    = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th_fg]
     VD_bfg   = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th_fg]
     P_bfg    = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th_fg]
@@ -666,4 +681,207 @@ function grape_state_kernel_single(waveform::Matrix{Float64},
     end
 
     return F, grad
+end
+
+# ─── Single-spin (dim=2) Bloch-vector fast path ─────────────────────────────
+#
+# Closed-system state-transfer GRAPE with `fidelity=:square` on a single spin
+# (Hilbert dim=2) reduces to real 3D rotations on the Bloch sphere. This path:
+#   • avoids LAPACK eigendecomposition (uses Rodrigues + scalar exp);
+#   • uses real arithmetic (4× over complex);
+#   • stores 4 reals per timestep instead of a 2×2 complex propagator;
+#   • computes the gradient as a real triple product per (k, n).
+#
+# Eligibility (auto-detected):
+#   - dim(state) == 2
+#   - fidelity == :square (Bloch is invariant under global phase, so :real
+#     would require explicit phase tracking)
+#   - no tracking checkpoints (routed elsewhere before _grape_cpu)
+#   - all control operators are pure Pauli (identity component ≈ 0); the
+#     drift's identity component is allowed and silently dropped (global phase).
+
+@inline function _bloch_problem_eligible(ctrl)::Bool
+    isempty(ctrl.rho_init) && return false
+    length(ctrl.rho_init[1]) == 2 || return false
+    ctrl.fidelity === :square || return false
+    isempty(ctrl.tracking) || return false
+    for op in ctrl.operators
+        size(op) == (2, 2) || return false
+        α, _, _, _ = _pauli_coeffs(op)
+        abs(α) > 1e-10 && return false
+    end
+    return true
+end
+
+@inline function _state_to_bloch(ψ::AbstractVector)::NTuple{3,Float64}
+    @inbounds begin
+        α = ComplexF64(ψ[1])
+        β = ComplexF64(ψ[2])
+        ab = conj(α) * β
+        rx = 2.0 * real(ab)
+        ry = 2.0 * imag(ab)
+        rz = abs2(α) - abs2(β)
+    end
+    return (rx, ry, rz)
+end
+
+# Apply Rodrigues rotation R(n̂, θ) to (vx, vy, vz), write into out[:, out_col].
+# n̂ is read from axis[:, axis_col]. cos/sin are taken from precomputed cs/sn.
+@inline function _rodrigues_apply!(out::AbstractMatrix{Float64}, out_col::Int,
+                                   axis::AbstractMatrix{Float64}, axis_col::Int,
+                                   cs::Float64, sn::Float64,
+                                   vx::Float64, vy::Float64, vz::Float64)
+    @inbounds begin
+        nx = axis[1, axis_col]
+        ny = axis[2, axis_col]
+        nz = axis[3, axis_col]
+        omc = 1.0 - cs
+        # n̂ × v
+        cx = ny*vz - nz*vy
+        cy = nz*vx - nx*vz
+        cz = nx*vy - ny*vx
+        # n̂ · v
+        ndotv = nx*vx + ny*vy + nz*vz
+        out[1, out_col] = cs*vx + sn*cx + omc*ndotv*nx
+        out[2, out_col] = cs*vy + sn*cy + omc*ndotv*ny
+        out[3, out_col] = cs*vz + sn*cz + omc*ndotv*nz
+    end
+    return nothing
+end
+
+function _grape_cpu_2x2_bloch(waveform::Matrix{Float64}, ctrl)
+    n_ctrl  = size(waveform, 1)
+    n_t     = size(waveform, 2)
+    n_drift = length(ctrl.drifts)
+    n_pwr   = length(ctrl.pwr_levels)
+    n_pairs = length(ctrl.rho_init)
+    N_ens   = n_drift * n_pwr * n_pairs
+
+    # Pre-compute Pauli decompositions (per call, not per ensemble member)
+    op_pauli    = [(let (_, b, c, d) = _pauli_coeffs(op); (b, c, d) end)
+                   for op in ctrl.operators]
+    drift_pauli = [(let (_, b, c, d) = _pauli_coeffs(H);  (b, c, d) end)
+                   for H in ctrl.drifts]
+    init_blochs = [_state_to_bloch(ψ) for ψ in ctrl.rho_init]
+    targ_blochs = [_state_to_bloch(ψ) for ψ in ctrl.rho_targ]
+
+    # Flatten (drift_idx, pwr) → outer ensemble index
+    ens_pairs = [(di, p) for di in 1:n_drift for p in ctrl.pwr_levels]
+    n_outer   = length(ens_pairs)
+
+    # Per-outer-task result buffers
+    fid_buf  = zeros(Float64, n_outer)
+    grad_buf = [zeros(Float64, n_ctrl, n_t) for _ in 1:n_outer]
+
+    # Per-thread scratch
+    n_th       = Threads.maxthreadid()
+    r_bufs     = [Matrix{Float64}(undef, 3, n_t + 1) for _ in 1:n_th]
+    λ_bufs     = [Matrix{Float64}(undef, 3, n_t + 1) for _ in 1:n_th]
+    axis_bufs  = [Matrix{Float64}(undef, 3, n_t)     for _ in 1:n_th]
+    cs_bufs    = [Vector{Float64}(undef, n_t)         for _ in 1:n_th]
+    sn_bufs    = [Vector{Float64}(undef, n_t)         for _ in 1:n_th]
+
+    Threads.@threads :static for idx in 1:n_outer
+        tid = Threads.threadid()
+        di, pwr  = ens_pairs[idx]
+        bd, cd, dd = drift_pauli[di]
+        r_traj   = r_bufs[tid]
+        λ_traj   = λ_bufs[tid]
+        axis     = axis_bufs[tid]
+        cs_arr   = cs_bufs[tid]
+        sn_arr   = sn_bufs[tid]
+        grad_local = grad_buf[idx]
+
+        # ── Build per-timestep rotation axis n̂ and (cos, sin) of θ ──────────
+        @inbounds for n in 1:n_t
+            b = bd; c = cd; d = dd
+            for k in 1:n_ctrl
+                pwr_w = pwr * waveform[k, n]
+                bk, ck, dk = op_pauli[k]
+                b += pwr_w * bk
+                c += pwr_w * ck
+                d += pwr_w * dk
+            end
+            mag = sqrt(b*b + c*c + d*d)        # = |ω|/2 with ω = 2(b,c,d)
+            θ   = 2.0 * mag * ctrl.pulse_dt[n]
+            cs_arr[n] = cos(θ)
+            sn_arr[n] = sin(θ)
+            if mag < 1e-30
+                axis[1, n] = 1.0; axis[2, n] = 0.0; axis[3, n] = 0.0
+            else
+                inv_m = 1.0 / mag
+                axis[1, n] = b * inv_m
+                axis[2, n] = c * inv_m
+                axis[3, n] = d * inv_m
+            end
+        end
+
+        fid_local = 0.0
+
+        for s in 1:n_pairs
+            r0 = init_blochs[s]
+            rT = targ_blochs[s]
+
+            # ── Forward sweep: r[n+1] = R(n̂_n, θ_n) · r[n] ──────────────────
+            r_traj[1, 1] = r0[1]; r_traj[2, 1] = r0[2]; r_traj[3, 1] = r0[3]
+            @inbounds for n in 1:n_t
+                _rodrigues_apply!(r_traj, n + 1, axis, n,
+                                  cs_arr[n], sn_arr[n],
+                                  r_traj[1, n], r_traj[2, n], r_traj[3, n])
+            end
+
+            # ── Fidelity per state pair: F = (1 + r[N+1] · r_target) / 2 ────
+            @inbounds dot_RT = r_traj[1, n_t+1]*rT[1] +
+                               r_traj[2, n_t+1]*rT[2] +
+                               r_traj[3, n_t+1]*rT[3]
+            fid_local += 0.5 * (1.0 + dot_RT)
+
+            # ── Backward sweep: λ[N+1] = r_target; λ[n] = Rᵀ · λ[n+1] ──────
+            # Rᵀ(n̂, θ) = R(n̂, -θ) → flip sin, keep cos
+            λ_traj[1, n_t+1] = rT[1]; λ_traj[2, n_t+1] = rT[2]; λ_traj[3, n_t+1] = rT[3]
+            @inbounds for n in n_t:-1:1
+                _rodrigues_apply!(λ_traj, n, axis, n,
+                                  cs_arr[n], -sn_arr[n],
+                                  λ_traj[1, n+1], λ_traj[2, n+1], λ_traj[3, n+1])
+            end
+
+            # ── Gradient: ∂F/∂u[k,n] += dt·pwr·(b_k,c_k,d_k)·(r_mid × λ_mid)
+            #
+            # The standard first-order GRAPE in Hilbert space uses ⟨λ[n+1]|H_j|ψ[n]⟩
+            # (mismatched times), which works only because of the trace identity
+            #   2 Im(z̄ ⟨λ|H_j|ψ⟩) = (b,c,d) · (r_ψ × r_λ)
+            # holding when ⟨ψ|λ⟩ = z. In Bloch space we have no z, so we MUST use
+            # consistent times. The midpoint average minimises O(θ²) per-step error
+            # and matches the slow Hilbert path to better than 1e-3 for typical dt.
+            @inbounds for n in 1:n_t
+                rx = 0.5 * (r_traj[1, n] + r_traj[1, n+1])
+                ry = 0.5 * (r_traj[2, n] + r_traj[2, n+1])
+                rz = 0.5 * (r_traj[3, n] + r_traj[3, n+1])
+                lx = 0.5 * (λ_traj[1, n] + λ_traj[1, n+1])
+                ly = 0.5 * (λ_traj[2, n] + λ_traj[2, n+1])
+                lz = 0.5 * (λ_traj[3, n] + λ_traj[3, n+1])
+                cx = ry*lz - rz*ly
+                cy = rz*lx - rx*lz
+                cz = rx*ly - ry*lx
+                dt_pwr = ctrl.pulse_dt[n] * pwr
+                for k in 1:n_ctrl
+                    bk, ck, dk = op_pauli[k]
+                    grad_local[k, n] += dt_pwr * (bk*cx + ck*cy + dk*cz)
+                end
+            end
+        end
+
+        fid_buf[idx] = fid_local
+    end  # @threads
+
+    fidelity = sum(fid_buf) / N_ens
+    grad     = zeros(Float64, n_ctrl, n_t)
+    for g in grad_buf
+        grad .+= g
+    end
+    grad ./= N_ens
+
+    fidelity = _apply_penalties!(fidelity, grad, waveform, ctrl)
+
+    return fidelity, grad
 end

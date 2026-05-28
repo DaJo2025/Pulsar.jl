@@ -365,3 +365,294 @@ function grape_lbfgsb_optimize(
         Dict{String,Any}("algorithm" => "GRAPE-L-BFGS-B", "lbfgs_memory" => memory),
     )
 end
+
+# ---------------------------------------------------------------------------
+# SU(2) scalar GRAPE (phase-only, constant Rabi)
+# ---------------------------------------------------------------------------
+
+"""
+    grape_su2_optimize(kernel::SU2Kernel, phi_init;
+                       memory=20, max_iter=2000, tol=1e-12,
+                       verbose=false, print_interval=200,
+                       callback=nothing) → OptimizationResult
+
+Phase-only L-BFGS-B GRAPE using the precomputed SU(2) scalar kernel.
+
+`phi_init` is a `Vector{Float64}` of length `N_TS` (one phase per time step).
+Returns an `OptimizationResult` where:
+- `result.controls` is `[1 × N_TS]` — the optimised phase vector.
+- `result.fidelity` is the best SU(2) ensemble fidelity achieved.
+- Cartesian waveform: `w = vcat(cos.(phi)', sin.(phi)')`.
+
+The per-call caching layer ensures each `(phi)` evaluation triggers the SU(2)
+kernel at most once (shared by the `f` and `grad!` closures passed to L-BFGS-B).
+"""
+function grape_su2_optimize(
+    kernel      :: SU2Kernel,
+    phi_init    :: AbstractVector{Float64};
+    memory      :: Int     = 20,
+    max_iter    :: Int     = 2000,
+    tol         :: Float64 = 1e-12,
+    verbose     :: Bool    = false,
+    print_interval :: Int  = 200,
+    callback            = nothing,
+)
+    N_TS = length(phi_init)
+
+    # Per-call cache: avoids evaluating the kernel twice for (f, grad!)
+    phi_cache  = fill(NaN, N_TS)
+    F_cache    = Ref(0.0)
+    GJ_cache   = zeros(Float64, N_TS)
+
+    function _update!(φ::AbstractVector{Float64})
+        φ == phi_cache && return
+        F, GJ      = su2_fidelity_and_grad(kernel, φ)
+        F_cache[]  = F
+        GJ_cache  .= GJ        # GJ = gradient of J = 1 − F  (minimize)
+        phi_cache .= φ
+    end
+
+    f(φ::Vector{Float64})           = (_update!(φ); -F_cache[])  # minimize -F
+    grad!(g::Vector{Float64}, φ::Vector{Float64}) =
+        (_update!(φ); g .= GJ_cache; g)     # GJ = d(-F)/dφ  (already the cost gradient)
+
+    lb = fill(-1e6, N_TS)
+    ub = fill( 1e6, N_TS)
+
+    return grape_lbfgsb_optimize(f, grad!, copy(phi_init);
+                                 lower          = lb,
+                                 upper          = ub,
+                                 memory         = memory,
+                                 max_iter       = max_iter,
+                                 tol            = tol,
+                                 verbose        = verbose,
+                                 print_interval = print_interval,
+                                 callback       = callback)
+end
+
+"""
+    grape_su2_multistart(kernel::SU2Kernel, N_TS;
+                         n_restarts=20, memory=20, max_iter=2000, tol=1e-12,
+                         rng=Random.GLOBAL_RNG,
+                         verbose=false, print_interval=200) → OptimizationResult
+
+Run `grape_su2_optimize` from `n_restarts` random initial phase vectors (uniform
+on [0, 2π]) and return the best result.  Restarts are parallelised with
+`Threads.@threads`.
+"""
+function grape_su2_multistart(
+    kernel      :: SU2Kernel,
+    N_TS        :: Int;
+    n_restarts  :: Int     = 20,
+    memory      :: Int     = 20,
+    max_iter    :: Int     = 2000,
+    tol         :: Float64 = 1e-12,
+    rng                    = Random.GLOBAL_RNG,
+    verbose     :: Bool    = false,
+    print_interval :: Int  = 200,
+)
+    seeds = rand(rng, UInt64, n_restarts)
+
+    results = Vector{OptimizationResult}(undef, n_restarts)
+    Threads.@threads for run in 1:n_restarts
+        local_rng = Random.MersenneTwister(seeds[run])
+        phi_0     = 2π .* rand(local_rng, N_TS)
+        results[run] = grape_su2_optimize(kernel, phi_0;
+                                          memory         = memory,
+                                          max_iter       = max_iter,
+                                          tol            = tol,
+                                          verbose        = false,
+                                          print_interval = print_interval + 1)
+    end
+
+    best_idx = argmax(r -> r.fidelity, results)
+    if verbose
+        @printf("  grape_su2_multistart: best F = %.8f (run %d / %d)\n",
+                results[best_idx].fidelity, best_idx, n_restarts)
+    end
+    return results[best_idx]
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Spin-I GRAPE (arbitrary single spin-I, phase-only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+"""
+    grape_spinI_optimize(kernel::SpinIKernel, phi_init;
+                         memory=20, max_iter=2000, tol=1e-12,
+                         verbose=false, print_interval=200,
+                         callback=nothing) → OptimizationResult
+
+L-BFGS-B optimizer for a `SpinIKernel` (arbitrary spin-I phase-only pulse).
+Uses per-call caching so the kernel is evaluated only once per (f, grad!) pair.
+"""
+function grape_spinI_optimize(
+    kernel         :: SpinIKernel,
+    phi_init       :: AbstractVector{Float64};
+    memory         :: Int     = 20,
+    max_iter       :: Int     = 2000,
+    tol            :: Float64 = 1e-12,
+    verbose        :: Bool    = false,
+    print_interval :: Int     = 200,
+    callback                  = nothing,
+)
+    N_TS = length(phi_init)
+
+    phi_cache = fill(NaN, N_TS)
+    F_cache   = Ref(0.0)
+    GJ_cache  = zeros(Float64, N_TS)
+
+    function _update!(φ::AbstractVector{Float64})
+        φ == phi_cache && return
+        F, GJ     = spinI_fidelity_and_grad(kernel, φ)
+        F_cache[] = F
+        GJ_cache .= GJ
+        phi_cache .= φ
+    end
+
+    f(φ::Vector{Float64})                        = (_update!(φ); -F_cache[])
+    grad!(g::Vector{Float64}, φ::Vector{Float64}) = (_update!(φ); g .= GJ_cache; g)
+
+    return grape_lbfgsb_optimize(f, grad!, copy(phi_init);
+                                 lower          = fill(-1e6, N_TS),
+                                 upper          = fill( 1e6, N_TS),
+                                 memory         = memory,
+                                 max_iter       = max_iter,
+                                 tol            = tol,
+                                 verbose        = verbose,
+                                 print_interval = print_interval,
+                                 callback       = callback)
+end
+
+"""
+    grape_spinI_multistart(kernel::SpinIKernel, N_TS;
+                           n_restarts=20, memory=20, max_iter=2000, tol=1e-12,
+                           rng=Random.GLOBAL_RNG,
+                           verbose=false, print_interval=200) → OptimizationResult
+
+Run `grape_spinI_optimize` from `n_restarts` random phase vectors and return the best.
+Restarts are parallelised with `Threads.@threads`.
+"""
+function grape_spinI_multistart(
+    kernel         :: SpinIKernel,
+    N_TS           :: Int;
+    n_restarts     :: Int     = 20,
+    memory         :: Int     = 20,
+    max_iter       :: Int     = 2000,
+    tol            :: Float64 = 1e-12,
+    rng                       = Random.GLOBAL_RNG,
+    verbose        :: Bool    = false,
+    print_interval :: Int     = 200,
+)
+    seeds   = rand(rng, UInt64, n_restarts)
+    results = Vector{OptimizationResult}(undef, n_restarts)
+    Threads.@threads for run in 1:n_restarts
+        local_rng    = Random.MersenneTwister(seeds[run])
+        phi_0        = 2π .* rand(local_rng, N_TS)
+        results[run] = grape_spinI_optimize(kernel, phi_0;
+                                            memory         = memory,
+                                            max_iter       = max_iter,
+                                            tol            = tol,
+                                            verbose        = false,
+                                            print_interval = print_interval + 1)
+    end
+
+    best_idx = argmax(r -> r.fidelity, results)
+    if verbose
+        @printf("  grape_spinI_multistart: best F = %.8f (run %d / %d)\n",
+                results[best_idx].fidelity, best_idx, n_restarts)
+    end
+    return results[best_idx]
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Trotter GRAPE (N coupled spin-1/2, Strang-split, phase-only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+"""
+    grape_trotter_optimize(kernel::TrotterKernel, phi_init;
+                           memory=20, max_iter=2000, tol=1e-12,
+                           verbose=false, print_interval=200,
+                           callback=nothing) → OptimizationResult
+
+L-BFGS-B optimizer for a `TrotterKernel` (N coupled spin-1/2, Strang-split).
+Uses per-call caching so the kernel is evaluated only once per (f, grad!) pair.
+"""
+function grape_trotter_optimize(
+    kernel         :: TrotterKernel,
+    phi_init       :: AbstractVector{Float64};
+    memory         :: Int     = 20,
+    max_iter       :: Int     = 2000,
+    tol            :: Float64 = 1e-12,
+    verbose        :: Bool    = false,
+    print_interval :: Int     = 200,
+    callback                  = nothing,
+)
+    N_TS = length(phi_init)
+
+    phi_cache = fill(NaN, N_TS)
+    F_cache   = Ref(0.0)
+    GJ_cache  = zeros(Float64, N_TS)
+
+    function _update!(φ::AbstractVector{Float64})
+        φ == phi_cache && return
+        F, GJ     = trotter_fidelity_and_grad(kernel, φ)
+        F_cache[] = F
+        GJ_cache .= GJ
+        phi_cache .= φ
+    end
+
+    f(φ::Vector{Float64})                        = (_update!(φ); -F_cache[])
+    grad!(g::Vector{Float64}, φ::Vector{Float64}) = (_update!(φ); g .= GJ_cache; g)
+
+    return grape_lbfgsb_optimize(f, grad!, copy(phi_init);
+                                 lower          = fill(-1e6, N_TS),
+                                 upper          = fill( 1e6, N_TS),
+                                 memory         = memory,
+                                 max_iter       = max_iter,
+                                 tol            = tol,
+                                 verbose        = verbose,
+                                 print_interval = print_interval,
+                                 callback       = callback)
+end
+
+"""
+    grape_trotter_multistart(kernel::TrotterKernel, N_TS;
+                             n_restarts=20, memory=20, max_iter=2000, tol=1e-12,
+                             rng=Random.GLOBAL_RNG,
+                             verbose=false, print_interval=200) → OptimizationResult
+
+Run `grape_trotter_optimize` from `n_restarts` random phase vectors and return the best.
+Restarts are parallelised with `Threads.@threads`.
+"""
+function grape_trotter_multistart(
+    kernel         :: TrotterKernel,
+    N_TS           :: Int;
+    n_restarts     :: Int     = 20,
+    memory         :: Int     = 20,
+    max_iter       :: Int     = 2000,
+    tol            :: Float64 = 1e-12,
+    rng                       = Random.GLOBAL_RNG,
+    verbose        :: Bool    = false,
+    print_interval :: Int     = 200,
+)
+    seeds   = rand(rng, UInt64, n_restarts)
+    results = Vector{OptimizationResult}(undef, n_restarts)
+    Threads.@threads for run in 1:n_restarts
+        local_rng    = Random.MersenneTwister(seeds[run])
+        phi_0        = 2π .* rand(local_rng, N_TS)
+        results[run] = grape_trotter_optimize(kernel, phi_0;
+                                              memory         = memory,
+                                              max_iter       = max_iter,
+                                              tol            = tol,
+                                              verbose        = false,
+                                              print_interval = print_interval + 1)
+    end
+
+    best_idx = argmax(r -> r.fidelity, results)
+    if verbose
+        @printf("  grape_trotter_multistart: best F = %.8f (run %d / %d)\n",
+                results[best_idx].fidelity, best_idx, n_restarts)
+    end
+    return results[best_idx]
+end

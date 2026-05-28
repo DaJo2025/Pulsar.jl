@@ -50,6 +50,14 @@ layers may only depend on lower ones.
 - Picking an algorithm: [GRAPE](algorithms/grape.md), [Second-order](algorithms/second_order.md), [QOC-specific](algorithms/qoc_specific.md)
 - Domain-specific guides: [NMR](domains/nmr.md), [QC platforms](domains/qc_platforms.md), …
 
+## What's new
+
+- **v0.2.0** ([release notes](release_notes/v0.2.0.md)) — native SU(2) / Spin-I /
+  Trotter propagators, matching fidelity metrics, an SU(2) duration-sweep
+  helper, GRAPE-family kernel refinements, and Julia 1.12 LAPACK + threading
+  compatibility fixes. Registry-ready: `[compat]` entries added, TagBot workflow
+  installed.
+
 ## License
 
 Apache License, Version 2.0.

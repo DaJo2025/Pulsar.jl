@@ -350,4 +350,76 @@ const _I2  = ComplexF64[1 0; 0 1]
 
     end  # Closed-system vs Lindblad propagation
 
+    # -----------------------------------------------------------------------
+    @testset "New fidelity gradients (analytic vs finite-diff)" begin
+
+        # Spin-1/2 with Ix, Iy controls. We feed propagators directly to the
+        # metric-aware overloads of compute_gradient_state / compute_gradient_gate
+        # and cross-check against a central finite-difference of the fidelity.
+        Ix_h = _σ_x / 2;  Iy_h = _σ_y / 2;  Iz_h = _σ_z / 2
+
+        Random.seed!(2025)
+        n_t   = 10
+        dt    = 1e-6
+        δ_hz  = 500.0
+        H_dr  = 2π * δ_hz .* Iz_h
+        H_c   = [2π .* Ix_h, 2π .* Iy_h]
+        u     = 2π * 1000.0 .* (rand(2, n_t) .- 0.5)
+
+        function _props(u)
+            Us = [exp(-im * (H_dr .+ u[1,k].*H_c[1] .+ u[2,k].*H_c[2]) * dt) for k in 1:n_t]
+            P  = zeros(ComplexF64, n_t+1, 2, 2);  Q = zeros(ComplexF64, n_t+1, 2, 2)
+            P[1,:,:] = _I2;  Q[n_t+1,:,:] = _I2
+            for k in 1:n_t;  P[k+1,:,:] = Us[k] * P[k,:,:];  end
+            for k in n_t:-1:1;  Q[k,:,:] = Q[k+1,:,:] * Us[k];  end
+            return P, Q, P[n_t+1,:,:]
+        end
+
+        ψ_i = ComplexF64[1.0, 0.0]
+        ψ_t = (1/sqrt(2)) .* ComplexF64[1.0, 1.0]
+        U_T = ComplexF64[0 1; 1 0]      # X-gate target
+
+        _fid_state(u, m) = (begin _,_,Utot = _props(u); state_fidelity(ψ_t, Utot * ψ_i, m) end)
+        _fid_gate(u, m)  = (begin _,_,Utot = _props(u); gate_fidelity(Utot, U_T, m)        end)
+
+        function _fd(f, u; eps=1e-7)
+            G = zeros(size(u))
+            @inbounds for j in 1:size(u,1), k in 1:size(u,2)
+                up = copy(u); up[j,k] += eps
+                um = copy(u); um[j,k] -= eps
+                G[j,k] = (f(up) - f(um)) / (2eps)
+            end
+            return G
+        end
+
+        P, Q, Utot = _props(u)
+        tol = 1e-5
+
+        # State metrics
+        for (name, metric) in [("ModulusDM", MODULUS_DM),
+                                ("SquaredDM", SQUARED_DM),
+                                ("LinearDM",  LINEAR_DM)]
+            G_a = Pulsar.compute_gradient_state(Utot, P, Q, H_c, ψ_i, ψ_t, dt, metric)
+            G_n = _fd(uu -> _fid_state(uu, metric), u)
+            err = maximum(abs.(G_a .- G_n)) / max(1, maximum(abs.(G_n)))
+            @test err < tol
+        end
+
+        # Gate metric
+        G_a = Pulsar.compute_gradient_gate(Utot, P, Q, H_c, U_T, dt, MODULUS_GATE)
+        G_n = _fd(uu -> _fid_gate(uu, MODULUS_GATE), u)
+        err = maximum(abs.(G_a .- G_n)) / max(1, maximum(abs.(G_n)))
+        @test err < tol
+
+        # Metric-aware path reproduces hard-coded path for existing metrics.
+        G1 = Pulsar.compute_gradient_state(Utot, P, Q, H_c, ψ_i, ψ_t, dt, SQUARED_OVERLAP)
+        G2 = Pulsar.compute_gradient_state(Utot, P, Q, H_c, ψ_i, ψ_t, dt)
+        @test maximum(abs.(G1 .- G2)) < 1e-12
+
+        G1 = Pulsar.compute_gradient_gate(Utot, P, Q, H_c, U_T, dt, NORMALIZED_GATE)
+        G2 = Pulsar.compute_gradient_gate(Utot, P, Q, H_c, U_T, dt)
+        @test maximum(abs.(G1 .- G2)) < 1e-12
+
+    end  # New fidelity gradients
+
 end  # Physics Validation

@@ -137,3 +137,27 @@ U = compute_propagator(H, dt, ChebyshevPropagator())
 
 Time-dependent MAS Hamiltonians are typically integrated with
 `MagnusPropagator(2)` (second-order Magnus) per rotor sub-period.
+
+## Specialised low-dimensional propagators (v0.2.0+)
+
+For spin-1/2 and single-spin problems, Pulsar ships three specialised
+propagators that avoid the full matrix-exponential O(dim³) cost:
+
+- **`SU2Propagator`** — Cayley–Klein scalar propagator for phase-only
+  constant-Rabi pulses on spin-1/2. The propagator factors as
+  `P_k(φ_n) = [[α_k, -β_n_k*], [β_n_k, α_k*]]` with α/β precomputed once via
+  [`precompute_su2_params`](https://github.com/DaJo2025/Pulsar.jl/tree/main/src/Computation/SU2Propagator.jl).
+  Per-step cost: 4 complex multiplications per offset (vs O(dim³) for matrix
+  exp).
+- **`SpinIPropagator`** — Single-spin scalar propagation for spin-I systems
+  (any half-integer or integer spin).
+- **`TrotterPropagator`** — Trotter–Suzuki decomposition option for cases
+  where the default `compute_propagator` (LAPACK Hermitian eigendecomposition)
+  is not the best fit; the order is configurable.
+
+Matching fidelity metrics live in `src/Physics/SU2Objectives.jl` and
+`src/Physics/SpinIObjectives.jl`. For sweeping the pulse duration of an
+SU(2) problem to locate the shortest pulse meeting a target fidelity, use
+[`sweep_su2_duration`](https://github.com/DaJo2025/Pulsar.jl/tree/main/src/Utilities/SU2DurationSweep.jl).
+
+See the [v0.2.0 release notes](../release_notes/v0.2.0.md) for the rationale.

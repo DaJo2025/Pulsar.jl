@@ -81,9 +81,24 @@ where σ = vec(ρ) evolves under exp(𝓛[n,j,p] dt[n]) at each step.
 The returned fidelity and gradient are the mean over all N_ens = n_drifts × n_pwr × n_pairs.
 """
 function grape_lindblad_kernel(waveform::Matrix{Float64}, ctrl)
+    fast_requested = hasproperty(ctrl, :fast_path) && ctrl.fast_path === true
     if ctrl.backend == :cpu
+        if _lindblad_2x2_eligible(ctrl)
+            return _grape_lindblad_cpu_2x2_pauli(waveform, ctrl)
+        end
+        if fast_requested
+            throw(ArgumentError(
+                "LindbladMRControl.fast_path = true but problem is ineligible " *
+                "for the dim=2 closed-system Liouville fast path. Required: " *
+                "_hilbert_dim==2, isempty(jump_ops), fidelity ∈ (:real,:square), " *
+                "all operators pure Pauli (zero identity component)."))
+        end
         return _grape_lindblad_cpu(waveform, ctrl)
     elseif ctrl.backend ∈ (:metal, :cuda)
+        if fast_requested
+            @warn "LindbladMRControl.fast_path = true ignored on GPU backend " *
+                  "(fast path is CPU-only)" maxlog=1
+        end
         return _grape_lindblad_gpu(waveform, ctrl, ctrl.backend)
     else
         throw(ArgumentError(
@@ -111,7 +126,7 @@ function _grape_lindblad_cpu(waveform::Matrix{Float64}, ctrl)
     grad_buf = [zeros(Float64, n_ctrl, n_t) for _ in 1:n_outer]
 
     # Per-thread scratch — avoids allocations inside the hot loop
-    n_th = Threads.nthreads()
+    n_th = Threads.maxthreadid()
 
     # Propagator matrices: [N²×N²] per (thread, step)
     Phi_bufs  = [[Matrix{ComplexF64}(undef, N2, N2) for _ in 1:n_t]
@@ -209,6 +224,208 @@ function _grape_lindblad_cpu(waveform::Matrix{Float64}, ctrl)
     grad ./= N_ens
 
     # ── Penalty terms (reused from GRAPEState._apply_penalties!) ──────────────
+    fidelity = _apply_penalties!(fidelity, grad, waveform, ctrl)
+
+    return fidelity, grad
+end
+
+# ─── Fast CPU path: dim=2 closed-system Liouville (Pauli kernel) ──────────────
+#
+# Single-spin closed-system fast path. Mirrors `_grape_cpu_2x2_bloch` in
+# GRAPEState.jl but operates on complex 3-vectors (Pauli coefficients of the
+# density operator) instead of real Bloch vectors. Eliminates the LAPACK 4×4
+# `exp` call per step and the 4×4 vec(ρ) propagator storage.
+#
+# Math: for ρ = (a/2)·I + b·σ with H = α·I + e_H·σ:
+#   - a is invariant under U·ρ·U†   → not propagated
+#   - α drops as a global phase     → discarded
+#   - b ∈ ℂ³ rotates under R(n̂, 2|e_H|dt) (the same real SO(3) as the Bloch path)
+#
+# Overlap: z = (1/2)·conj(a_targ)·a_init + 2·conj(b_targ)·b(T)
+# Gradient inner product:
+#   ⟨λ[n+1]|𝓛_k|σ[n]⟩ = 4 · (b[n] × conj(b_λ[n+1])) · e_k   (complex scalar)
+
+@inline function _lindblad_2x2_eligible(ctrl)::Bool
+    if hasproperty(ctrl, :fast_path) && ctrl.fast_path === false
+        return false
+    end
+    ctrl._hilbert_dim == 2            || return false
+    isempty(ctrl.jump_ops)            || return false
+    ctrl.fidelity ∈ (:real, :square)  || return false
+    for op in ctrl.operators
+        size(op) == (2, 2) || return false
+        α, _, _, _ = _pauli_coeffs(op)
+        abs(α) > 1e-10 && return false
+    end
+    return true
+end
+
+# Column-major vec(ρ) for 2×2 ρ → Pauli coefficients (a, b_x, b_y, b_z).
+# Accepts non-Hermitian ρ (e.g. I±) → complex coefficients.
+#   vec(ρ) = [ρ₁₁, ρ₂₁, ρ₁₂, ρ₂₂]
+#   a  = ρ₁₁ + ρ₂₂            bz = (ρ₁₁ − ρ₂₂)/2
+#   bx = (ρ₁₂ + ρ₂₁)/2        by = im·(ρ₁₂ − ρ₂₁)/2
+@inline function _vec_rho_to_pauli(σ::AbstractVector)::NTuple{4,ComplexF64}
+    @inbounds begin
+        ρ11 = ComplexF64(σ[1])
+        ρ21 = ComplexF64(σ[2])
+        ρ12 = ComplexF64(σ[3])
+        ρ22 = ComplexF64(σ[4])
+        a   = ρ11 + ρ22
+        bz  = 0.5 * (ρ11 - ρ22)
+        bx  = 0.5 * (ρ12 + ρ21)
+        by  = 0.5im * (ρ12 - ρ21)
+    end
+    return (a, bx, by, bz)
+end
+
+# Apply the real Rodrigues rotation R(n̂, θ) to a complex 3-vector.
+@inline function _rodrigues_apply_complex!(out::AbstractMatrix{ComplexF64}, out_col::Int,
+                                           axis::AbstractMatrix{Float64}, axis_col::Int,
+                                           cs::Float64, sn::Float64,
+                                           vx::ComplexF64, vy::ComplexF64, vz::ComplexF64)
+    @inbounds begin
+        nx = axis[1, axis_col]
+        ny = axis[2, axis_col]
+        nz = axis[3, axis_col]
+        omc = 1.0 - cs
+        cx = ny*vz - nz*vy
+        cy = nz*vx - nx*vz
+        cz = nx*vy - ny*vx
+        ndotv = nx*vx + ny*vy + nz*vz
+        out[1, out_col] = cs*vx + sn*cx + omc*ndotv*nx
+        out[2, out_col] = cs*vy + sn*cy + omc*ndotv*ny
+        out[3, out_col] = cs*vz + sn*cz + omc*ndotv*nz
+    end
+    return nothing
+end
+
+function _grape_lindblad_cpu_2x2_pauli(waveform::Matrix{Float64}, ctrl)
+    n_ctrl  = size(waveform, 1)
+    n_t     = size(waveform, 2)
+    n_drift = length(ctrl.drifts)
+    n_pwr   = length(ctrl.pwr_levels)
+    n_pairs = length(ctrl._sigma_init)
+    N_ens   = n_drift * n_pwr * n_pairs
+
+    op_pauli    = [(let (_, b, c, d) = _pauli_coeffs(op); (b, c, d) end)
+                   for op in ctrl.operators]
+    drift_pauli = [(let (_, b, c, d) = _pauli_coeffs(H);  (b, c, d) end)
+                   for H in ctrl.drifts]
+    init_pauli  = [_vec_rho_to_pauli(σ) for σ in ctrl._sigma_init]
+    targ_pauli  = [_vec_rho_to_pauli(σ) for σ in ctrl._sigma_targ]
+
+    ens_pairs = [(di, p) for di in 1:n_drift for p in ctrl.pwr_levels]
+    n_outer   = length(ens_pairs)
+
+    fid_buf  = zeros(Float64, n_outer)
+    grad_buf = [zeros(Float64, n_ctrl, n_t) for _ in 1:n_outer]
+
+    n_th       = Threads.maxthreadid()
+    b_fwd_bufs = [Matrix{ComplexF64}(undef, 3, n_t + 1) for _ in 1:n_th]
+    b_lam_bufs = [Matrix{ComplexF64}(undef, 3, n_t + 1) for _ in 1:n_th]
+    axis_bufs  = [Matrix{Float64}(undef, 3, n_t)         for _ in 1:n_th]
+    cs_bufs    = [Vector{Float64}(undef, n_t)            for _ in 1:n_th]
+    sn_bufs    = [Vector{Float64}(undef, n_t)            for _ in 1:n_th]
+
+    Threads.@threads :static for idx in 1:n_outer
+        tid       = Threads.threadid()
+        di, pwr   = ens_pairs[idx]
+        bd, cd, dd = drift_pauli[di]
+        b_fwd     = b_fwd_bufs[tid]
+        b_lam     = b_lam_bufs[tid]
+        axis      = axis_bufs[tid]
+        cs_arr    = cs_bufs[tid]
+        sn_arr    = sn_bufs[tid]
+        grad_local = grad_buf[idx]
+
+        # Per-step rotation axis n̂ and (cos, sin) of θ = 2|ω|dt
+        @inbounds for n in 1:n_t
+            b = bd; c = cd; d = dd
+            for k in 1:n_ctrl
+                pwr_w = pwr * waveform[k, n]
+                bk, ck, dk = op_pauli[k]
+                b += pwr_w * bk
+                c += pwr_w * ck
+                d += pwr_w * dk
+            end
+            mag = sqrt(b*b + c*c + d*d)
+            θ   = 2.0 * mag * ctrl.pulse_dt[n]
+            cs_arr[n] = cos(θ)
+            sn_arr[n] = sin(θ)
+            if mag < 1e-30
+                axis[1, n] = 1.0; axis[2, n] = 0.0; axis[3, n] = 0.0
+            else
+                inv_m = 1.0 / mag
+                axis[1, n] = b * inv_m
+                axis[2, n] = c * inv_m
+                axis[3, n] = d * inv_m
+            end
+        end
+
+        fid_local = 0.0
+
+        for s in 1:n_pairs
+            a_init, bx_i, by_i, bz_i = init_pauli[s]
+            a_targ, bx_t, by_t, bz_t = targ_pauli[s]
+
+            # Forward Pauli rotation
+            b_fwd[1, 1] = bx_i; b_fwd[2, 1] = by_i; b_fwd[3, 1] = bz_i
+            @inbounds for n in 1:n_t
+                _rodrigues_apply_complex!(b_fwd, n + 1, axis, n,
+                                          cs_arr[n], sn_arr[n],
+                                          b_fwd[1, n], b_fwd[2, n], b_fwd[3, n])
+            end
+
+            # HS overlap (trace a is invariant: a(T) = a_init)
+            @inbounds bx_T = b_fwd[1, n_t + 1]
+            @inbounds by_T = b_fwd[2, n_t + 1]
+            @inbounds bz_T = b_fwd[3, n_t + 1]
+            z = 0.5 * conj(a_targ) * a_init +
+                2.0 * (conj(bx_t) * bx_T + conj(by_t) * by_T + conj(bz_t) * bz_T)
+
+            fid_local += ctrl.fidelity == :square ? abs2(z) : real(z)
+
+            # Backward sweep: U(n)† corresponds to R(n̂, -θ) → flip sn
+            b_lam[1, n_t + 1] = bx_t
+            b_lam[2, n_t + 1] = by_t
+            b_lam[3, n_t + 1] = bz_t
+            @inbounds for n in n_t:-1:1
+                _rodrigues_apply_complex!(b_lam, n, axis, n,
+                                          cs_arr[n], -sn_arr[n],
+                                          b_lam[1, n+1], b_lam[2, n+1], b_lam[3, n+1])
+            end
+
+            # Gradient (mixed-time, mirrors slow Liouville path)
+            # inner = 4 · (b[n] × conj(b_λ[n+1])) · e_k    (ℂ scalar)
+            @inbounds for n in 1:n_t
+                bx_n = b_fwd[1, n]; by_n = b_fwd[2, n]; bz_n = b_fwd[3, n]
+                lx_n = conj(b_lam[1, n+1])
+                ly_n = conj(b_lam[2, n+1])
+                lz_n = conj(b_lam[3, n+1])
+                Mx = by_n * lz_n - bz_n * ly_n
+                My = bz_n * lx_n - bx_n * lz_n
+                Mz = bx_n * ly_n - by_n * lx_n
+                dt_pwr = ctrl.pulse_dt[n] * pwr
+                for k in 1:n_ctrl
+                    bk, ck, dk = op_pauli[k]
+                    inner = 4.0 * (bk * Mx + ck * My + dk * Mz)
+                    grad_local[k, n] += lindblad_grad_prefactor(
+                        z, inner, dt_pwr; type = ctrl.fidelity)
+                end
+            end
+        end  # state pairs
+
+        fid_buf[idx] = fid_local
+    end  # @threads
+
+    fidelity = sum(fid_buf) / N_ens
+    grad     = zeros(Float64, n_ctrl, n_t)
+    for g in grad_buf
+        grad .+= g
+    end
+    grad ./= N_ens
+
     fidelity = _apply_penalties!(fidelity, grad, waveform, ctrl)
 
     return fidelity, grad
@@ -333,7 +550,7 @@ function _grape_lindblad_chunked(
     fidelity_sum = 0.0
     grad_sum     = zeros(Float64, n_ctrl, n_t)
 
-    n_th   = Threads.nthreads()
+    n_th   = Threads.maxthreadid()
     L_bufs = [Matrix{ComplexF64}(undef, N2, N2) for _ in 1:n_th]
 
     old_blas = BLAS.get_num_threads()
@@ -531,7 +748,7 @@ function _grape_lindblad_streaming(
     fidelity_sum = 0.0
     grad_sum     = zeros(Float64, n_ctrl, n_t)
 
-    n_th   = Threads.nthreads()
+    n_th   = Threads.maxthreadid()
     L_bufs = [Matrix{ComplexF64}(undef, N2, N2) for _ in 1:n_th]
 
     # ── Build ALL propagators on CPU (once, parallel) ─────────────────────────
