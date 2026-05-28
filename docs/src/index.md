@@ -52,11 +52,15 @@ layers may only depend on lower ones.
 
 ## What's new
 
+- **v0.2.1** ([release notes](release_notes/v0.2.1.md)) — patch release
+  finishing the Julia 1.12 threading fix sweep (`Threads.nthreads()` →
+  `Threads.maxthreadid()` in PSO, GA, DE, and `ensemble_grad!`). v0.2.1 is
+  the version to install on Julia 1.12+.
 - **v0.2.0** ([release notes](release_notes/v0.2.0.md)) — native SU(2) / Spin-I /
   Trotter propagators, matching fidelity metrics, an SU(2) duration-sweep
-  helper, GRAPE-family kernel refinements, and Julia 1.12 LAPACK + threading
-  compatibility fixes. Registry-ready: `[compat]` entries added, TagBot workflow
-  installed.
+  helper, GRAPE-family kernel refinements, and the first round of Julia 1.12
+  LAPACK + threading compatibility fixes. Registry-ready: `[compat]` entries
+  added, TagBot workflow installed.
 
 ## License
 
