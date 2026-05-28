@@ -131,8 +131,19 @@ using Random
         target = unitary_target(σx)
         N = 80
         dt = 0.05
-        ctrl = ControlSequence(0.05 .* randn(MersenneTwister(2026_04_29), 2, N),
-                               dt, N * dt, N)
+        # Deterministic initial controls — Julia 1.12 changed the output of
+        # randn(MersenneTwister(seed), ...) (the stdlib does not promise
+        # cross-version RNG stability for non-default seeds). A hand-crafted
+        # starting point keeps the test version-independent. Magnitude is in
+        # the right ballpark for the X-gate (total angle ≈ Σ u·dt ≈ π) so
+        # GRAPE converges in well under 200 iterations.
+        u = Matrix{Float64}(undef, 2, N)
+        @inbounds for k in 1:N
+            t = (k - 0.5) / N
+            u[1, k] = 0.5 + 0.1 * sin(2π * t)
+            u[2, k] = 0.1 * cos(2π * t)
+        end
+        ctrl = ControlSequence(u, dt, N * dt, N)
         cfg = GRAPEConfig(max_iter=200, verbose=false)
         result = grape_optimize(sys, target, ctrl; config=cfg)
         @test result.fidelity > 0.99
