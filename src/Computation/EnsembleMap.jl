@@ -94,7 +94,7 @@ Abstract supertype for ensemble parallelism strategies.
 abstract type AbstractEnsembleStrategy end
 
 """
-    ThreadedEnsemble(; n_threads=Threads.nthreads())
+    ThreadedEnsemble(; n_threads=Threads.maxthreadid())
 
 Parallelise ensemble members using Julia's built-in threading.
 Default strategy; scales with `julia -t N`.
@@ -516,7 +516,7 @@ function ensemble_grad!(
     end
 
     # Per-thread gradient buffers (avoids allocations inside the loop)
-    n_threads = Threads.nthreads()
+    n_threads = Threads.maxthreadid()
     bufs = [zeros(Float64, p) for _ in 1:n_threads]
 
     # Accumulator (protected by a lock for thread safety)

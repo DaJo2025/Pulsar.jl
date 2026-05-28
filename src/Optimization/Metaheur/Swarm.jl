@@ -34,7 +34,7 @@ function pso_optimize(
     ub  = upper === nothing ? fill( Inf, n) : Float64.(upper)
     np  = popsize > 0 ? popsize : max(20, 2 + n ÷ 2)
     obj = maximize ? (x -> -f(x)) : f
-    nth = Threads.nthreads()
+    nth = Threads.maxthreadid()
     rngs = [MersenneTwister(base_seed + UInt32(t)) for t in 0:nth-1]
 
     # Determine velocity range
@@ -146,7 +146,7 @@ function de_optimize(
     ub  = upper === nothing ? fill( Inf, n) : Float64.(upper)
     np  = popsize > 0 ? popsize : max(10 * n, 30)
     obj = maximize ? (x -> -f(x)) : f
-    nth = Threads.nthreads()
+    nth = Threads.maxthreadid()
     rngs = [MersenneTwister(base_seed + UInt32(t)) for t in 0:nth-1]
 
     # Initialise population (serial for reproducibility)

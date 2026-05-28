@@ -34,7 +34,7 @@ function ga_optimize(
     ub   = upper === nothing ? fill( Inf, n) : Float64.(upper)
     np   = popsize > 0 ? popsize : max(20, 4 * n)
     obj  = maximize ? (x -> -f(x)) : f
-    nth  = Threads.nthreads()
+    nth  = Threads.maxthreadid()
     # Per-thread RNGs derived from base seed for thread-safe reproducibility
     rngs = [MersenneTwister(base_seed + UInt32(t)) for t in 0:nth-1]
 
