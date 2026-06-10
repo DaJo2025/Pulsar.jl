@@ -65,31 +65,28 @@ using Test, LinearAlgebra
     end
 
     @testset "Gradient non-zero for non-trivial system" begin
-        # With non-zero controls, gradient should not be identically zero.
-        # Use an EXPLICIT initial state different from the target, plus
-        # controls strong enough to actually move the state. The original
-        # test was passing under the v0.1.0 eigen propagator because of
-        # floating-point noise in a degenerate setup (tiny controls vs
-        # large drift, plus initial_state defaulting to target_state),
-        # which gave a barely-detectable FD gradient of ~1e-10. The v0.2.0
-        # closed-form Pauli propagator is more accurate, so it correctly
-        # returns 0 in that regime. Fixing the test to be physically
-        # meaningful (true |0⟩→|1⟩ transfer, controls ≳ drift) makes the
-        # gradient genuinely informative regardless of propagator path.
-        import Random
-        Random.seed!(20260513)
+        # A genuine |0⟩→|1⟩ transfer at scales where the controls actually drive
+        # the dynamics, so the gradient is resolvably non-zero.
+        #
+        # NOTE: the shared `setup_qubit` targets the *fixed point* |1⟩→|1⟩ (no
+        # psi_init → psi_init defaults to the target).  |1⟩ is an eigenstate of
+        # the σ_z drift and the σ_x/σ_y controls have zero diagonal in |1⟩, so at
+        # the tiny time scale (dt=5e-9, u≈0.05) the fidelity stays ~1.0 and a
+        # finite-difference step changes it by less than eps(1.0) — the gradient
+        # is then legitimately ~0.  Here we instead optimise a real transfer with
+        # control strength comparable to the drift, where the gradient is large.
         σ_x = ComplexF64[0 1; 1 0]
         σ_y = ComplexF64[0 -1im; 1im 0]
         σ_z = ComplexF64[1 0; 0 -1]
-        dt, n_ts = 5e-9, 20
-        H_drift  = 2π * 1e3 * σ_z
-        system   = quantum_system(H_drift, [σ_x, σ_y])
-        # Explicit |0⟩ → |1⟩ transfer (psi_init differs from target_state)
-        target   = state_target(ComplexF64[0.0, 1.0]; psi_init=ComplexF64[1.0, 0.0])
-        u        = 2π * 1e6 .* randn(2, n_ts)
-        cs       = ControlSequence(u, dt, dt*n_ts, n_ts)
-        cfg      = AutoDiffConfig(backend=:finite_diff)
-        grad     = compute_gradient_autodiff(system, cs, target; config=cfg)
+        system = quantum_system(2π * 1e3 * σ_z, [σ_x, σ_y])
+        target = state_target(ComplexF64[0, 1]; psi_init = ComplexF64[1, 0])
+        dt, nt = 1e-4, 20
+        u = zeros(2, nt)
+        u[1, :] .= 2π * 1e3            # control on σ_x ≈ drift scale
+        u[2, :] .= 2π * 0.4e3          # control on σ_y
+        cs  = ControlSequence(u, dt, dt * nt, nt)
+        cfg = AutoDiffConfig(backend=:finite_diff)
+        grad = compute_gradient_autodiff(system, cs, target; config=cfg)
         @test maximum(abs, grad) > 1e-10
     end
 

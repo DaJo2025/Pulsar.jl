@@ -34,12 +34,39 @@ For `type == "state"` the fidelity is the state-overlap fidelity
 
     F = |⟨ψ_target | U | ψ_init⟩|²
 """
+# Layer-1-safe sets of valid fidelity-metric symbols (the Symbol → metric-object
+# mapping itself lives in Physics/Objectives.jl; Types must not depend upward).
+# Pure-state (vector) targets: the overlap-based metrics, plus the density-matrix
+# metrics that reduce to an overlap for a pure state.  The Uhlmann fidelity
+# (`:dm_uhlmann`) needs an actual density matrix, so it belongs to the
+# open-system / Lindblad path, not a pure-state `QuantumTarget`.
+const VALID_STATE_METRICS = (:auto, :real, :square, :modulus,
+                             :dm_linear, :dm_real, :dm_square, :dm_modulus)
+const VALID_GATE_METRICS  = (:auto, :normalized, :real, :average, :modulus)
+
 struct QuantumTarget
     type           :: String
     target_state   :: Union{Vector{ComplexF64}, Nothing}
     target_unitary :: Union{Matrix{ComplexF64}, Nothing}
     initial_state  :: Union{Vector{ComplexF64}, Nothing}
     dim            :: Int
+    # Figure-of-merit selector.  `:auto` → the per-type default (`:normalized`
+    # for gates, `:square` for states); any other symbol picks an explicit
+    # fidelity metric (see Physics/Objectives.jl).  Stored as a `Symbol` so the
+    # Types layer stays free of any Physics dependency.
+    metric         :: Symbol
+
+    # Single inner constructor with `metric` defaulting to `:auto`, so every
+    # existing 5-argument positional call keeps working unchanged.
+    function QuantumTarget(type::AbstractString,
+                           target_state::Union{Vector{ComplexF64}, Nothing},
+                           target_unitary::Union{Matrix{ComplexF64}, Nothing},
+                           initial_state::Union{Vector{ComplexF64}, Nothing},
+                           dim::Integer,
+                           metric::Symbol = :auto)
+        new(String(type), target_state, target_unitary, initial_state,
+            Int(dim), metric)
+    end
 end
 
 # ============================================================================
@@ -75,7 +102,11 @@ tgt = state_target(ComplexF64[0, 1]; psi_init = ComplexF64[1, 0])
 ```
 """
 function state_target(state::AbstractVector;
-                       psi_init::Union{AbstractVector, Nothing} = nothing)::QuantumTarget
+                       psi_init::Union{AbstractVector, Nothing} = nothing,
+                       metric::Symbol = :auto)::QuantumTarget
+    metric in VALID_STATE_METRICS || throw(ArgumentError(
+        "metric :$metric is not a valid state fidelity metric. " *
+        "Valid: $(VALID_STATE_METRICS)"))
     psi = ComplexF64.(state)
     d = length(psi)
     if d == 0
@@ -103,7 +134,7 @@ function state_target(state::AbstractVector;
         ni < eps(Float64) && throw(ArgumentError("psi_init has zero norm"))
     end
 
-    return QuantumTarget("state", psi, nothing, psi_i, d)
+    return QuantumTarget("state", psi, nothing, psi_i, d, metric)
 end
 
 """
@@ -128,7 +159,10 @@ U = [1 0 0 0; 0 1 0 0; 0 0 0 1; 0 0 1 0] .+ 0im
 tgt = unitary_target(U)
 ```
 """
-function unitary_target(U::AbstractMatrix)::QuantumTarget
+function unitary_target(U::AbstractMatrix; metric::Symbol = :auto)::QuantumTarget
+    metric in VALID_GATE_METRICS || throw(ArgumentError(
+        "metric :$metric is not a valid gate fidelity metric. " *
+        "Valid: $(VALID_GATE_METRICS)"))
     Uc = ComplexF64.(U)
     m, n = size(Uc)
     if m != n
@@ -140,7 +174,7 @@ function unitary_target(U::AbstractMatrix)::QuantumTarget
         throw(ArgumentError(
             "Target matrix is not unitary: ||U†U - I|| / dim = $deviation > 1e-8"))
     end
-    return QuantumTarget("unitary", nothing, Uc, nothing, m)
+    return QuantumTarget("unitary", nothing, Uc, nothing, m, metric)
 end
 
 # ============================================================================

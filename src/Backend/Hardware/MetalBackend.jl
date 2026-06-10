@@ -24,27 +24,12 @@ using LinearAlgebra
 
 const _METAL_LOADED = Ref{Bool}(false)
 
-let
-    try
-        @eval using Metal
-        if Metal.functional()
-            _METAL_LOADED[] = true
-        else
-            @warn "MetalBackend: Metal.jl loaded but no functional Metal device found. " *
-                  "Calls to Metal backend functions will fall back to CPU."
-        end
-    catch
-        # Metal.jl not installed or not on Apple Silicon — disabled silently
-    end
-end
-
-"""
-    METAL_AVAILABLE::Bool
-
-`true` only if Metal.jl is installed **and** a functional Metal GPU is present
-at the time the module was loaded.
-"""
-const METAL_AVAILABLE = _METAL_LOADED[]
+# Metal.jl support is a package extension (ext/PulsarMetalExt.jl).  The extension
+# does `using Metal` (binding `Metal` correctly) and sets
+# `_METAL_LOADED[] = Metal.functional()` in its `__init__`.  The core module
+# therefore never references a bare `Metal` symbol; the GPU primitive method
+# bodies live in the extension.  See the matching note in CUDABackend.jl for the
+# precompile-time binding bug this replaces.
 
 # ---------------------------------------------------------------------------
 # Type definition
@@ -66,7 +51,7 @@ hardware (M1/M2/M3/M4 or an AMD GPU via macOS Metal API).
 - `use_fp64_fallback::Bool`: Route FP64-critical steps (eigendecomposition)
   through CPU.  Recommended `true` (default).
 """
-struct MetalBackend
+struct MetalBackend <: AbstractComputeBackend
     device_id         :: Int
     memory_limit_gb   :: Float64
     use_fp32          :: Bool
@@ -106,27 +91,10 @@ end
 # ---------------------------------------------------------------------------
 
 # CPU fallback: Hermitian matrix exponential via eigendecomposition.
+# (Retained for use by the Metal extension's CPU-eigendecomposition step.)
 function _herm_matexp_metal(H::Matrix{ComplexF64}, dt::Float64)
     F = eigen(Hermitian(H))
     return F.vectors * Diagonal(exp.(-im .* F.values .* dt)) * F.vectors'
-end
-
-# Metal matrix multiply (F32): A * B using Metal BLAS
-function _metal_gemm_f32(A::Matrix{ComplexF64}, B::Matrix{ComplexF64})
-    # Metal only supports Float32; split complex into real/imag pairs.
-    # Re(A*B) = Re(A)*Re(B) - Im(A)*Im(B)
-    # Im(A*B) = Re(A)*Im(B) + Im(A)*Re(B)
-    Ar = Metal.MtlArray(Float32.(real(A)))
-    Ai = Metal.MtlArray(Float32.(imag(A)))
-    Br = Metal.MtlArray(Float32.(real(B)))
-    Bi = Metal.MtlArray(Float32.(imag(B)))
-
-    Cr = Ar * Br - Ai * Bi
-    Ci = Ar * Bi + Ai * Br
-
-    Cr_h = Float64.(Array(Cr))
-    Ci_h = Float64.(Array(Ci))
-    return complex.(Cr_h, Ci_h)
 end
 
 # ---------------------------------------------------------------------------
@@ -150,28 +118,13 @@ function matrix_exponential_metal(
     dt      :: Float64,
     backend :: MetalBackend,
 )
-    if !_METAL_LOADED[]
-        @warn "matrix_exponential_metal: Metal unavailable, falling back to CPU."
-        return _herm_matexp_metal(H, dt)
-    end
-    try
-        # Eigendecomposition on CPU (FP64)
-        F    = eigen(Hermitian(H))
-        expλ = exp.(-im .* F.values .* dt)   # diagonal entries
-        V    = F.vectors
-        D_V  = V * Diagonal(expλ)            # V * exp(Λ)
-
-        if backend.use_fp32 && !backend.use_fp64_fallback
-            # Final gemm on Metal (FP32)
-            return _metal_gemm_f32(D_V, V')
-        else
-            # CPU FP64 final multiply
-            return D_V * V'
-        end
-    catch e
-        @warn "matrix_exponential_metal: computation failed ($e), falling back to CPU."
-        return _herm_matexp_metal(H, dt)
-    end
+    # Thin wrapper over the batched primitive (1-matrix batch).  The Metal
+    # extension's `batched_herm_propagators(::MetalBackend, …)` builds the
+    # eigendecomposition on CPU (Metal lacks an FP64 batched eigensolver) and
+    # does the scale + batched matmul on device in FP32; otherwise the generic
+    # CPU fallback runs.  `Array(…)` downloads if the result is an MtlArray.
+    U = batched_herm_propagators(backend, reshape(H, size(H, 1), size(H, 2), 1), dt)
+    return Array(U)[:, :, 1]
 end
 
 # ---------------------------------------------------------------------------
@@ -194,30 +147,7 @@ function batch_propagators_metal(
     dt      :: Float64,
     backend :: MetalBackend,
 )
-    dim, _, n_steps = size(H_array)
-    result = Array{ComplexF64,3}(undef, dim, dim, n_steps)
-
-    if !_METAL_LOADED[]
-        @warn "batch_propagators_metal: Metal unavailable, falling back to CPU."
-        for k in 1:n_steps
-            result[:, :, k] = _herm_matexp_metal(H_array[:, :, k], dt)
-        end
-        return result
-    end
-
-    try
-        # Parallelize eigen across time steps on CPU threads
-        Threads.@threads for k in 1:n_steps
-            result[:, :, k] = matrix_exponential_metal(H_array[:, :, k], dt, backend)
-        end
-        return result
-    catch e
-        @warn "batch_propagators_metal: computation failed ($e), falling back to CPU."
-        for k in 1:n_steps
-            result[:, :, k] = _herm_matexp_metal(H_array[:, :, k], dt)
-        end
-        return result
-    end
+    return Array(batched_herm_propagators(backend, H_array, dt))
 end
 
 # ---------------------------------------------------------------------------
@@ -238,36 +168,10 @@ function fidelity_metal(
     U_target :: Matrix{ComplexF64},
     backend  :: MetalBackend,
 )
+    # Single gate fidelity — a one-matrix reduction; evaluated on the host.
     dim = size(U_total, 1)
-
-    if !_METAL_LOADED[]
-        @warn "fidelity_metal: Metal unavailable, falling back to CPU."
-        overlap = tr(U_target' * U_total)
-        return abs2(overlap) / dim^2
-    end
-
-    try
-        if backend.use_fp32 && !backend.use_fp64_fallback
-            # FP32 element-wise product on Metal, reduce on CPU
-            Ut_r = Metal.MtlArray(Float32.(real(U_target)))
-            Ut_i = Metal.MtlArray(Float32.(imag(U_target)))
-            U_r  = Metal.MtlArray(Float32.(real(U_total)))
-            U_i  = Metal.MtlArray(Float32.(imag(U_total)))
-            # Re(conj(Ut) .* U) = Re(Ut)*Re(U) + Im(Ut)*Im(U)
-            # Im(conj(Ut) .* U) = Re(Ut)*Im(U) - Im(Ut)*Re(U)
-            inner_r = Float64(sum(Array(Ut_r .* U_r .+ Ut_i .* U_i)))
-            inner_i = Float64(sum(Array(Ut_r .* U_i .- Ut_i .* U_r)))
-            overlap = complex(inner_r, inner_i)
-        else
-            # CPU FP64
-            overlap = tr(U_target' * U_total)
-        end
-        return abs2(overlap) / dim^2
-    catch e
-        @warn "fidelity_metal: computation failed ($e), falling back to CPU."
-        overlap = tr(U_target' * U_total)
-        return abs2(overlap) / dim^2
-    end
+    overlap = tr(U_target' * U_total)
+    return abs2(overlap) / dim^2
 end
 
 # ---------------------------------------------------------------------------
@@ -301,88 +205,10 @@ function gradient_metal(
     dt       :: Float64,
     backend  :: MetalBackend,
 )
-    n_ctrl, n_steps = size(controls)
-    dim             = size(H_drift, 1)
-
-    # CPU fallback (identical to CUDA fallback)
-    function _cpu_grape_grad()
-        P = Vector{Matrix{ComplexF64}}(undef, n_steps + 1)
-        P[1] = Matrix{ComplexF64}(I, dim, dim)
-        for k in 1:n_steps
-            H_k = copy(H_drift)
-            for j in 1:n_ctrl
-                H_k .+= controls[j, k] .* H_ctrl[j]
-            end
-            P[k+1] = _herm_matexp_metal(H_k, dt) * P[k]
-        end
-        Q = Vector{Matrix{ComplexF64}}(undef, n_steps + 1)
-        Q[n_steps+1] = target'
-        for k in n_steps:-1:1
-            H_k = copy(H_drift)
-            for j in 1:n_ctrl
-                H_k .+= controls[j, k] .* H_ctrl[j]
-            end
-            Q[k] = Q[k+1] * _herm_matexp_metal(H_k, dt)
-        end
-        Φ = tr(target' * P[n_steps+1]) / dim
-        grad = zeros(Float64, n_ctrl, n_steps)
-        for k in 1:n_steps, j in 1:n_ctrl
-            M  = Q[k+1]' * (-im * dt * H_ctrl[j]) * P[k]
-            grad[j, k] = (2.0 / dim^2) * real(conj(Φ) * tr(M))
-        end
-        return grad
-    end
-
-    if !_METAL_LOADED[]
-        @warn "gradient_metal: Metal unavailable, falling back to CPU."
-        return _cpu_grape_grad()
-    end
-
-    try
-        # Forward pass — propagators on host (FP64 precision throughout)
-        P = Vector{Matrix{ComplexF64}}(undef, n_steps + 1)
-        P[1] = Matrix{ComplexF64}(I, dim, dim)
-        for k in 1:n_steps
-            H_k = copy(H_drift)
-            for j in 1:n_ctrl
-                H_k .+= controls[j, k] .* H_ctrl[j]
-            end
-            Uk = matrix_exponential_metal(H_k, dt, backend)
-            # Use Metal BLAS for the matrix-matrix multiply if FP32 is on
-            if backend.use_fp32 && !backend.use_fp64_fallback
-                P[k+1] = _metal_gemm_f32(Uk, P[k])
-            else
-                P[k+1] = Uk * P[k]
-            end
-        end
-
-        # Backward pass
-        Q = Vector{Matrix{ComplexF64}}(undef, n_steps + 1)
-        Q[n_steps+1] = target'
-        for k in n_steps:-1:1
-            H_k = copy(H_drift)
-            for j in 1:n_ctrl
-                H_k .+= controls[j, k] .* H_ctrl[j]
-            end
-            Uk = matrix_exponential_metal(H_k, dt, backend)
-            if backend.use_fp32 && !backend.use_fp64_fallback
-                Q[k] = _metal_gemm_f32(Q[k+1], Uk)
-            else
-                Q[k] = Q[k+1] * Uk
-            end
-        end
-
-        Φ    = tr(target' * P[n_steps+1]) / dim
-        grad = zeros(Float64, n_ctrl, n_steps)
-        for k in 1:n_steps, j in 1:n_ctrl
-            M = Q[k+1]' * (-im * dt * H_ctrl[j]) * P[k]
-            grad[j, k] = (2.0 / dim^2) * real(conj(Φ) * tr(M))
-        end
-        return grad
-    catch e
-        @warn "gradient_metal: computation failed ($e), falling back to CPU."
-        return _cpu_grape_grad()
-    end
+    # Delegates to the device-generic batched GRAPE gate gradient (shared with
+    # the CUDA path).  Batched propagators via the Metal primitive override when
+    # available; threaded CPU otherwise.
+    return _batched_grape_gate_gradient(backend, H_drift, H_ctrl, controls, target, dt)
 end
 
 # ---------------------------------------------------------------------------

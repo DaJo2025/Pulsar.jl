@@ -410,7 +410,10 @@ type-stable — the compiler specialises on `metric` at call time.
                                           ::ModulusOverlap)
     absz = abs(z)
     absz < 1e-14 && return 0.0
-    return dt_pwr * imag(inner / absz)
+    # ∂|z|/∂u = Re(z̄ ∂z)/|z| = dt_pwr · Im(z̄ · inner)/|z|  (∂z = −i·dt_pwr·inner).
+    # The phase factor z̄ is essential — without it the gradient is wrong whenever
+    # the overlap z is not real-positive (e.g. a purely imaginary trace).
+    return dt_pwr * imag(conj(z) * inner) / absz
 end
 
 # ── Gate metrics whose chain factor matches the corresponding state metric ──
@@ -427,8 +430,18 @@ end
                                           dt_pwr::Float64, ::ModulusGate)
     absz = abs(z)
     absz < 1e-14 && return 0.0
-    return dt_pwr * imag(inner / absz)
+    # ∂|z|/∂u = Re(z̄ ∂z)/|z| = dt_pwr · Im(z̄ · inner)/|z|  (∂z = −i·dt_pwr·inner).
+    # The phase factor z̄ is essential — without it the gradient is wrong whenever
+    # the overlap z is not real-positive (e.g. a purely imaginary trace).
+    return dt_pwr * imag(conj(z) * inner) / absz
 end
+
+# AverageGate: F_avg = (d·F_norm + 1)/(d+1) is an affine function of the process
+# fidelity F_norm = |z|², so ∂F_avg = d/(d+1) · ∂F_norm.  The chain factor here is
+# the NormalizedGate one; the dimension-dependent d/(d+1) scale is applied by
+# `compute_gradient_gate` (which knows `dim`).
+@inline fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64, dt_pwr::Float64,
+                                 ::AverageGate) = 2 * dt_pwr * imag(conj(z) * inner)
 
 # Linear DM fidelity (Re Tr(ρ† σ)) for closed-system pure ρ_T:
 # F = Re|⟨ψ_T|ψ⟩|² = |⟨ψ_T|ψ⟩|² is real and ≥ 0, so the chain factor
@@ -445,6 +458,21 @@ end
 @inline function fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64,
                                           dt_pwr::Float64, ::SquaredDMFidelity)
     return 4 * abs2(z) * dt_pwr * imag(conj(z) * inner)
+end
+
+# Catch-all: metrics with no closed-form first-order GRAPE gradient (e.g. the
+# Uhlmann fidelity, which involves a matrix square root).  These are still fully
+# usable as a *forward* figure of merit — for derivative-free optimizers
+# (CMA-ES, PSO, DE, Nelder–Mead) and for evaluation — but cannot drive a
+# gradient-based optimizer.  Fail with a clear message instead of a MethodError.
+function fidelity_grad_prefactor(::ComplexF64, ::ComplexF64, ::Float64,
+                                 metric::AbstractFidelityMetric)
+    throw(ArgumentError(
+        "$(nameof(typeof(metric))) has no closed-form GRAPE gradient. " *
+        "Use it as a forward figure of merit with a derivative-free optimizer " *
+        "(:cmaes, :pso, :de, :nelder_mead), or choose a differentiable metric: " *
+        "gates → :normalized, :real, :average, :modulus; " *
+        "states → :real, :square, :modulus, :dm_linear, :dm_real, :dm_square, :dm_modulus."))
 end
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -710,14 +738,16 @@ function compute_fidelity(U_total::Matrix{ComplexF64}, target::QuantumTarget)::F
     if target.type == "unitary"
         target.target_unitary === nothing && throw(ArgumentError(
             "target.type is \"unitary\" but target.target_unitary is nothing"))
-        return gate_fidelity(U_total, target.target_unitary; type = :normalized)
+        sym = target.metric === :auto ? :normalized : target.metric
+        return gate_fidelity(U_total, target.target_unitary; type = sym)
     elseif target.type == "state"
         target.target_state === nothing && throw(ArgumentError(
             "target.type is \"state\" but target.target_state is nothing"))
+        sym = target.metric === :auto ? :square : target.metric
         psi_init  = target.initial_state === nothing ?
                         target.target_state : target.initial_state
         psi_final = U_total * psi_init
-        return state_fidelity(target.target_state, psi_final; type = :square)
+        return state_fidelity(target.target_state, psi_final; type = sym)
     elseif target.type == "subspace"
         throw(ArgumentError("Subspace fidelity is not yet implemented"))
     else

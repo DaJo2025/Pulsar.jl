@@ -134,9 +134,19 @@ include("Computation/TrotterPropagator.jl")
 # ---------------------------------------------------------------------------
 # Layer 1c: Backend — hardware abstraction (remaining sub-concerns)
 # ---------------------------------------------------------------------------
+# Common supertype for all compute-backend config structs (CPUBackend,
+# CUDABackend, MetalBackend).  Declared here, before the Hardware includes,
+# so each struct can subtype it.  Enables the device-dispatched batched
+# primitive layer (Backend/BatchedPrimitives.jl): the generic methods provide
+# a CPU fallback for *any* backend, and the GPU extensions
+# (ext/PulsarCUDAExt.jl, ext/PulsarMetalExt.jl) add specialised methods on
+# ::CUDABackend / ::MetalBackend.
+abstract type AbstractComputeBackend end
+
 include("Backend/Hardware/CPUBackend.jl")
 include("Backend/Hardware/CUDABackend.jl")
 include("Backend/Hardware/MetalBackend.jl")
+include("Backend/BatchedPrimitives.jl")
 include("Backend/Scheduling/HybridExecution.jl")
 
 # ---------------------------------------------------------------------------
@@ -269,6 +279,7 @@ include("Utilities/ProblemLibrary.jl")
 # GPU device registry (uses _METAL_LOADED/_CUDA_LOADED from Hardware files)
 # ---------------------------------------------------------------------------
 include("Backend/Scheduling/DeviceRegistry.jl")
+include("Runtime/GPUSetup.jl")
 
 # ---------------------------------------------------------------------------
 # Layer 1a extension: NMR spin system types (solution NMR + heteronuclear)
@@ -691,6 +702,7 @@ export grape_dnp_lindblad_kernel
 
 # Device registry — global compute device for ensemble averaging
 export set_device!, get_device, available_devices, with_device
+export setup_gpu!, load_gpu!, detect_gpu_hardware, gpu_setup_status
 
 # ---------------------------------------------------------------------------
 # Public API — Quantum Computing application layer
@@ -885,7 +897,11 @@ function __init__()
     # 2. GPU detection — populates _METAL_LOADED and _CUDA_LOADED
     _detect_and_load_backends()
 
-    # 3. Interactive banner
+    # 3. Preference-driven GPU auto-setup: if the user has run `setup_gpu!`,
+    #    auto-load their GPU here; otherwise print a one-time discovery hint.
+    _maybe_autoload_gpu()
+
+    # 4. Interactive banner
     if isinteractive()
         _print_banner()
     end

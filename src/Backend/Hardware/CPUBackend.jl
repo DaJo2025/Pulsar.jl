@@ -28,7 +28,7 @@ Configuration for the CPU computation backend.
   would exceed this limit will raise an `OutOfMemoryError` before
   allocating.  Set to `Inf` to disable the check.
 """
-struct CPUBackend
+struct CPUBackend <: AbstractComputeBackend
     num_threads::Int
     use_blas::Bool
     memory_limit_gb::Float64

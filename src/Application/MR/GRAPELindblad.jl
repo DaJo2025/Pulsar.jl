@@ -433,7 +433,12 @@ end
 
 # ─── GPU entry point ──────────────────────────────────────────────────────────
 #
-# Mirrors _grape_gpu / _grape_gpu_kernel in GRAPEState.jl.
+# Open-system (Liouville-space) counterpart of the closed-system `_grape_batched`
+# in GRAPEState.jl.  The Liouvillian 𝓛 is non-Hermitian, so propagators use
+# `exp(𝓛 dt)` rather than the Hermitian eigensolver; the batched device version
+# of that is `batched_nonherm_propagators` (Backend/BatchedPrimitives.jl), which
+# this kernel can adopt.  This path already resolves the GPU module at runtime
+# (no precompile-time binding bug).
 #
 # Two execution strategies selected automatically based on available GPU memory:
 #

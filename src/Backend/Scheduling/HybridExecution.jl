@@ -54,6 +54,11 @@ mutable struct HybridExecutionPlanner
     gpu_memory_threshold::Float64
     enable_overlap::Bool
     historical_timings::Dict{String,Float64}
+    # Batch-volume awareness: for *many small* matrices the batch COUNT, not the
+    # matrix dim, decides CPU vs GPU.  A small-dim problem still goes to the GPU
+    # once the batch is large enough to amortise launch + transfer overhead.
+    cpu_batch_threshold::Int        # max batch count that still prefers CPU at small dim
+    gpu_volume_threshold::Float64   # batch_count·dim² element count that forces GPU
 
     function HybridExecutionPlanner(
         cpu_threshold_dim::Int,
@@ -61,23 +66,34 @@ mutable struct HybridExecutionPlanner
         gpu_memory_threshold::Float64,
         enable_overlap::Bool,
         historical_timings::Dict{String,Float64},
+        cpu_batch_threshold::Int = 512,
+        gpu_volume_threshold::Float64 = 2.0e6,
     )
         cpu_threshold_dim > 0 ||
             throw(ArgumentError("cpu_threshold_dim must be positive"))
         0 < gpu_memory_threshold ≤ 1.0 ||
             throw(ArgumentError("gpu_memory_threshold must be in (0, 1]"))
+        cpu_batch_threshold > 0 ||
+            throw(ArgumentError("cpu_batch_threshold must be positive"))
         new(cpu_threshold_dim, gpu_threshold_dim, gpu_memory_threshold,
-            enable_overlap, historical_timings)
+            enable_overlap, historical_timings,
+            cpu_batch_threshold, gpu_volume_threshold)
     end
 end
 
 """
     HybridExecutionPlanner(; cpu_threshold_dim=16, gpu_threshold_dim=64,
                               gpu_memory_threshold=0.85, enable_overlap=false,
+                              cpu_batch_threshold=512, gpu_volume_threshold=2e6,
                               historical_timings=Dict{String,Float64}()
                             ) -> HybridExecutionPlanner
 
 Keyword constructor with recommended defaults.
+
+`cpu_batch_threshold` and `gpu_volume_threshold` add **batch-volume awareness**:
+a problem with a small matrix dimension but a large batch (e.g. an ensemble ×
+many timesteps of 4×4 matrices) is routed to the GPU, where the old dim-only
+heuristic wrongly forced CPU.
 
 # Examples
 ```julia
@@ -90,11 +106,14 @@ function HybridExecutionPlanner(;
     gpu_threshold_dim::Int = 64,
     gpu_memory_threshold::Float64 = 0.85,
     enable_overlap::Bool = false,
+    cpu_batch_threshold::Int = 512,
+    gpu_volume_threshold::Float64 = 2.0e6,
     historical_timings::Dict{String,Float64} = Dict{String,Float64}(),
 )::HybridExecutionPlanner
     return HybridExecutionPlanner(
         cpu_threshold_dim, gpu_threshold_dim, gpu_memory_threshold,
         enable_overlap, historical_timings,
+        cpu_batch_threshold, gpu_volume_threshold,
     )
 end
 
@@ -105,14 +124,19 @@ end
 """
     _gpu_available() -> Bool
 
-Return `true` if any GPU backend (CUDA or Metal) is available.
-Checks for the module-level constants `CUDA_AVAILABLE` and `METAL_AVAILABLE`
-if they are defined; otherwise returns `false`.
+Return `true` if any GPU backend (CUDA or Metal) is available, i.e. the
+corresponding package extension has set `_CUDA_LOADED[]` / `_METAL_LOADED[]`.
 """
 function _gpu_available()::Bool
-    cuda = try; CUDA_AVAILABLE;  catch; false; end
-    metal = try; METAL_AVAILABLE; catch; false; end
-    return cuda || metal
+    return _CUDA_LOADED[] || _METAL_LOADED[]
+end
+
+# Resolve a loaded GPU package module by name (e.g. "CUDA", "Metal") without a
+# bare reference — the package is only present when its extension is active.
+function _loaded_gpu_module(name::AbstractString)
+    id = Base.identify_package(name)
+    (id !== nothing && haskey(Base.loaded_modules, id)) || return nothing
+    return Base.loaded_modules[id]
 end
 
 """
@@ -122,18 +146,21 @@ Return the amount of free GPU memory in GiB.
 Returns `Inf` when no GPU is available (no memory constraint).
 """
 function _gpu_free_memory_gb()::Float64
-    try
-        if CUDA_AVAILABLE
-            free, _ = CUDA.memory_info()
-            return free / 1024^3
-        end
-    catch; end
-    try
-        if METAL_AVAILABLE
-            dev = Metal.current_device()
-            return Metal.recommended_working_set_size(dev) / 1024^3
-        end
-    catch; end
+    if _CUDA_LOADED[]
+        try
+            CUDAmod = _loaded_gpu_module("CUDA")
+            CUDAmod === nothing || return CUDAmod.memory_info()[1] / 1024^3
+        catch; end
+    end
+    if _METAL_LOADED[]
+        try
+            Metalmod = _loaded_gpu_module("Metal")
+            if Metalmod !== nothing
+                dev = Metalmod.current_device()
+                return Metalmod.recommended_working_set_size(dev) / 1024^3
+            end
+        catch; end
+    end
     return Inf
 end
 
@@ -143,18 +170,21 @@ end
 Return total GPU memory in GiB, or `Inf` if unavailable.
 """
 function _gpu_total_memory_gb()::Float64
-    try
-        if CUDA_AVAILABLE
-            _, total = CUDA.memory_info()
-            return total / 1024^3
-        end
-    catch; end
-    try
-        if METAL_AVAILABLE
-            dev = Metal.current_device()
-            return Metal.recommended_working_set_size(dev) / 1024^3
-        end
-    catch; end
+    if _CUDA_LOADED[]
+        try
+            CUDAmod = _loaded_gpu_module("CUDA")
+            CUDAmod === nothing || return CUDAmod.memory_info()[2] / 1024^3
+        catch; end
+    end
+    if _METAL_LOADED[]
+        try
+            Metalmod = _loaded_gpu_module("Metal")
+            if Metalmod !== nothing
+                dev = Metalmod.current_device()
+                return Metalmod.recommended_working_set_size(dev) / 1024^3
+            end
+        catch; end
+    end
     return Inf
 end
 
@@ -374,32 +404,50 @@ function plan_hybrid_execution(
     planner::HybridExecutionPlanner;
     op::String = "propagator",
     n_controls::Int = 1,
+    batch_count::Int = n_timesteps,
 )::Symbol
+    # `batch_count` is the total number of matrices in the batched eigensolve
+    # (fused ensemble-member × timestep, etc.).  It — not `dim` alone — drives
+    # the small-matrix decision: 763 560 4×4 matrices belong on the GPU even
+    # though dim=4 is "small".
+    N = max(batch_count, 1)
+
     # Rule 1: No GPU
     !gpu_available && return :cpu
 
-    # Rule 2: Small system
-    dim <= planner.cpu_threshold_dim && return :cpu
+    # Rule 2: Small system AND small batch → CPU (launch + transfer overhead
+    # dominates).  Previously this returned CPU on small dim regardless of N.
+    if dim <= planner.cpu_threshold_dim && N <= planner.cpu_batch_threshold
+        return :cpu
+    end
 
-    # Rule 3: GPU memory check
-    estimated_bytes = n_timesteps * dim * dim * sizeof(ComplexF64)
+    # Rule 3: GPU memory check — sized from the full batch, not just timesteps.
+    estimated_bytes = N * dim * dim * sizeof(ComplexF64)
     total_gpu_gb = _gpu_total_memory_gb()
     if isfinite(total_gpu_gb)
-        if estimated_bytes / (total_gpu_gb * 1024^3) > planner.gpu_memory_threshold
-            @info "Falling back to CPU: estimated GPU allocation " *
-                  "($(round(estimated_bytes/1024^3; digits=3)) GiB) would exceed " *
-                  "$(round(planner.gpu_memory_threshold*100; digits=1))% of GPU memory."
+        # A batch larger than the budget is chunked (see batched_chunk_size), so
+        # only fall back to CPU when even a single matrix is implausibly large.
+        single_bytes = dim * dim * sizeof(ComplexF64)
+        if single_bytes / (total_gpu_gb * 1024^3) > planner.gpu_memory_threshold
+            @info "Falling back to CPU: a single $(dim)×$(dim) matrix " *
+                  "exceeds the GPU memory budget."
             return :cpu
         end
     end
 
-    # Rule 4: Large system
+    # Rule 4: Large matrix dimension → GPU.
     dim > planner.gpu_threshold_dim && return :gpu
 
-    # Rule 5: Intermediate – compare estimates
-    t_cpu = estimate_operation_time(op, dim, n_timesteps, :cpu;
+    # Rule 4b: Large batch volume (count·dim²) → GPU even at small dim.  This is
+    # the path that captures the many-small-matrices regime.
+    if N * dim * dim >= planner.gpu_volume_threshold
+        return :gpu
+    end
+
+    # Rule 5: Intermediate – compare estimates (timed over the full batch).
+    t_cpu = estimate_operation_time(op, dim, N, :cpu;
                                     n_controls = n_controls, planner = planner)
-    t_gpu = estimate_operation_time(op, dim, n_timesteps, :gpu;
+    t_gpu = estimate_operation_time(op, dim, N, :gpu;
                                     n_controls = n_controls, planner = planner)
 
     ratio = t_cpu / max(t_gpu, 1e-15)
@@ -508,8 +556,8 @@ device = adaptive_backend_selection("gradient", 32, 500, resources)
 ```
 """
 function available_resources()::Dict{String,Any}
-    cuda  = try; CUDA_AVAILABLE;  catch; false; end
-    metal = try; METAL_AVAILABLE; catch; false; end
+    cuda  = _CUDA_LOADED[]
+    metal = _METAL_LOADED[]
     gpu   = cuda || metal
 
     return Dict{String,Any}(

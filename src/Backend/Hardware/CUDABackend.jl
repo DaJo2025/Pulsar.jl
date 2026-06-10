@@ -20,29 +20,18 @@ using LinearAlgebra
 
 const _CUDA_LOADED = Ref{Bool}(false)
 
-# Attempt to load CUDA.jl at include time.  Errors are swallowed so that
-# Pulsar loads cleanly on systems without CUDA.
-let
-    try
-        @eval using CUDA
-        if CUDA.functional()
-            _CUDA_LOADED[] = true
-        else
-            @warn "CUDABackend: CUDA.jl loaded but no functional GPU found. " *
-                  "Calls to CUDA backend functions will fall back to CPU."
-        end
-    catch
-        # CUDA.jl not installed — backend disabled silently
-    end
-end
-
-"""
-    CUDA_AVAILABLE::Bool
-
-`true` only if CUDA.jl is installed **and** a functional NVIDIA GPU is present
-at the time the module was loaded.
-"""
-const CUDA_AVAILABLE = _CUDA_LOADED[]
+# NOTE: CUDA.jl support is provided as a package extension (ext/PulsarCUDAExt.jl,
+# declared under [weakdeps]/[extensions] in Project.toml).  The extension does
+# `using CUDA` at the top — which binds `CUDA` correctly — and sets
+# `_CUDA_LOADED[] = CUDA.functional()` in its own `__init__`.  Therefore the
+# core module never references a bare `CUDA` symbol; the GPU method bodies of the
+# batched primitives (see Backend/BatchedPrimitives.jl) live in the extension.
+#
+# Historical bug (fixed): an earlier `let; @eval using CUDA; end` block here ran
+# only at precompile time — when CUDA is absent — so `_CUDA_LOADED[]` was set on
+# mere module presence while `CUDA` stayed unbound inside `Pulsar`, making every
+# `CUDA.CuArray(...)` throw `UndefVarError` that the `try/catch` swallowed into a
+# silent CPU fallback.  The extension mechanism is the durable fix.
 
 # ---------------------------------------------------------------------------
 # Type definition
@@ -62,7 +51,7 @@ a functional NVIDIA GPU.
 - `use_tensor_cores::Bool`: Prefer TF32/FP16 tensor-core paths (experimental).
 - `use_async::Bool`: Use CUDA streams for pipeline overlap (experimental).
 """
-struct CUDABackend
+struct CUDABackend <: AbstractComputeBackend
     device_id        :: Int
     memory_limit_gb  :: Float64
     use_tensor_cores :: Bool
@@ -128,23 +117,12 @@ function matrix_exponential_cuda(
     dt      :: Float64,
     backend :: CUDABackend,
 )
-    if !_CUDA_LOADED[]
-        @warn "matrix_exponential_cuda: CUDA unavailable, falling back to CPU."
-        return _herm_matexp(H, dt)
-    end
-    try
-        # Upload Hermitian matrix to device
-        H_d = CUDA.CuArray(H)
-        # CUSOLVER eigen on device (via LinearAlgebra overloads in CUDA.jl)
-        F = LinearAlgebra.eigen(LinearAlgebra.Hermitian(H_d))
-        # Build exp(-i λ dt) on device
-        expλ = CUDA.CuArray(exp.(-im .* Array(F.values) .* dt))
-        U_d  = F.vectors * LinearAlgebra.Diagonal(expλ) * F.vectors'
-        return Array(U_d)
-    catch e
-        @warn "matrix_exponential_cuda: GPU computation failed ($e), falling back to CPU."
-        return _herm_matexp(H, dt)
-    end
+    # Thin wrapper over the batched primitive: a 1-matrix batch.  When the CUDA
+    # extension is loaded, `batched_herm_propagators(::CUDABackend, …)` runs the
+    # device kernel; otherwise the generic CPU fallback runs.  `Array(…)` is a
+    # no-op on host arrays and a device→host download on a CuArray.
+    U = batched_herm_propagators(backend, reshape(H, size(H, 1), size(H, 2), 1), dt)
+    return Array(U)[:, :, 1]
 end
 
 # ---------------------------------------------------------------------------
@@ -168,42 +146,10 @@ function batch_propagators_cuda(
     dt      :: Float64,
     backend :: CUDABackend,
 )
-    dim, _, n_steps = size(H_array)
-    result = Array{ComplexF64,3}(undef, dim, dim, n_steps)
-
-    if !_CUDA_LOADED[]
-        @warn "batch_propagators_cuda: CUDA unavailable, falling back to CPU."
-        for k in 1:n_steps
-            result[:, :, k] = _herm_matexp(H_array[:, :, k], dt)
-        end
-        return result
-    end
-
-    try
-        # Batch the host↔device transfers:
-        #   - Upload the full H_array once.
-        #   - Accumulate each propagator into a device-side result tensor.
-        #   - Download the full result in one contiguous copy at the end.
-        # The previous per-step `Array(Uk)` forced a synchronous download
-        # on every iteration, serialising the GPU pipeline with the PCIe bus.
-        H_d       = CUDA.CuArray(H_array)
-        result_d  = CUDA.CuArray{ComplexF64,3}(undef, dim, dim, n_steps)
-        for k in 1:n_steps
-            Hk   = H_d[:, :, k]
-            F    = LinearAlgebra.eigen(LinearAlgebra.Hermitian(Hk))
-            expλ = CUDA.CuArray(exp.(-im .* Array(F.values) .* dt))
-            Uk   = F.vectors * LinearAlgebra.Diagonal(expλ) * F.vectors'
-            @views result_d[:, :, k] .= Uk
-        end
-        copyto!(result, result_d)   # single bulk download
-        return result
-    catch e
-        @warn "batch_propagators_cuda: GPU computation failed ($e), falling back to CPU."
-        for k in 1:n_steps
-            result[:, :, k] = _herm_matexp(H_array[:, :, k], dt)
-        end
-        return result
-    end
+    # Genuinely batched now: one `heevjBatched` + `gemm_strided_batched` inside
+    # `batched_herm_propagators(::CUDABackend, …)` (CUDA extension), chunked to a
+    # GPU memory budget.  No per-slice eigendecomposition, no per-slice host sync.
+    return Array(batched_herm_propagators(backend, H_array, dt))
 end
 
 # ---------------------------------------------------------------------------
@@ -224,24 +170,12 @@ function fidelity_cuda(
     U_target :: Matrix{ComplexF64},
     backend  :: CUDABackend,
 )
+    # A single gate fidelity is a one-matrix reduction — there is nothing to
+    # batch, so it is evaluated directly on the host.  Batched gate/state
+    # fidelities used inside the optimizers go through the kernel reductions.
     dim = size(U_total, 1)
-    if !_CUDA_LOADED[]
-        @warn "fidelity_cuda: CUDA unavailable, falling back to CPU."
-        overlap = tr(U_target' * U_total)
-        return abs2(overlap) / dim^2
-    end
-    try
-        U_d  = CUDA.CuArray(U_total)
-        Ut_d = CUDA.CuArray(U_target)
-        # Tr(Ut† U) = sum of element-wise products along diagonal of Ut' * U
-        # Equivalently: sum(conj(Ut_d) .* U_d) = tr(Ut_d' * U_d)
-        overlap = CUDA.mapreduce(identity, +, conj.(Ut_d) .* U_d)
-        return abs2(Array(overlap)[]) / dim^2
-    catch e
-        @warn "fidelity_cuda: GPU computation failed ($e), falling back to CPU."
-        overlap = tr(U_target' * U_total)
-        return abs2(overlap) / dim^2
-    end
+    overlap = tr(U_target' * U_total)
+    return abs2(overlap) / dim^2
 end
 
 # ---------------------------------------------------------------------------
@@ -276,100 +210,11 @@ function gradient_cuda(
     dt       :: Float64,
     backend  :: CUDABackend,
 )
-    n_ctrl, n_steps = size(controls)
-    dim             = size(H_drift, 1)
-
-    # CPU fallback path
-    function _cpu_grape_grad()
-        # Forward propagators P[k] = U_k P[k-1], P[0] = I
-        P = Vector{Matrix{ComplexF64}}(undef, n_steps + 1)
-        P[1] = Matrix{ComplexF64}(I, dim, dim)
-        for k in 1:n_steps
-            H_k = copy(H_drift)
-            for j in 1:n_ctrl
-                H_k .+= controls[j, k] .* H_ctrl[j]
-            end
-            P[k+1] = _herm_matexp(H_k, dt) * P[k]
-        end
-        # Backward co-state Q[k] where Q[N+1] = target†
-        Q = Vector{Matrix{ComplexF64}}(undef, n_steps + 1)
-        Q[n_steps+1] = target'
-        for k in n_steps:-1:1
-            H_k = copy(H_drift)
-            for j in 1:n_ctrl
-                H_k .+= controls[j, k] .* H_ctrl[j]
-            end
-            Q[k] = Q[k+1] * _herm_matexp(H_k, dt)
-        end
-        # Fidelity overlap Φ = Tr(target† P[N+1]) / dim
-        Φ = tr(target' * P[n_steps+1]) / dim
-        # Gradient
-        grad = zeros(Float64, n_ctrl, n_steps)
-        for k in 1:n_steps, j in 1:n_ctrl
-            M  = Q[k+1]' * (-im * dt * H_ctrl[j]) * P[k]
-            grad[j, k] = (2.0 / dim^2) * real(conj(Φ) * tr(M))
-        end
-        return grad
-    end
-
-    if !_CUDA_LOADED[]
-        @warn "gradient_cuda: CUDA unavailable, falling back to CPU."
-        return _cpu_grape_grad()
-    end
-
-    try
-        # Upload static arrays
-        H_d_d    = CUDA.CuArray(H_drift)
-        H_c_d    = [CUDA.CuArray(H_ctrl[j]) for j in 1:n_ctrl]
-        target_d = CUDA.CuArray(target)
-        I_d      = CUDA.CuArray(Matrix{ComplexF64}(I, dim, dim))
-
-        # Forward pass on GPU — propagators stored on host to avoid OOM for
-        # large problems (each (dim×dim) ComplexF64 is 16 dim² bytes).
-        P_d = Vector{CUDA.CuArray{ComplexF64,2}}(undef, n_steps + 1)
-        P_d[1] = copy(I_d)
-        for k in 1:n_steps
-            H_k_d = copy(H_d_d)
-            for j in 1:n_ctrl
-                CUDA.axpy!(complex(controls[j, k]), H_c_d[j], H_k_d)
-            end
-            F_k  = LinearAlgebra.eigen(LinearAlgebra.Hermitian(H_k_d))
-            expλ = CUDA.CuArray(exp.(-im .* Array(F_k.values) .* dt))
-            Uk_d = F_k.vectors * LinearAlgebra.Diagonal(expλ) * F_k.vectors'
-            P_d[k+1] = Uk_d * P_d[k]
-        end
-
-        # Backward pass
-        Q_d = Vector{CUDA.CuArray{ComplexF64,2}}(undef, n_steps + 1)
-        Q_d[n_steps+1] = target_d'
-        for k in n_steps:-1:1
-            H_k_d = copy(H_d_d)
-            for j in 1:n_ctrl
-                CUDA.axpy!(complex(controls[j, k]), H_c_d[j], H_k_d)
-            end
-            F_k  = LinearAlgebra.eigen(LinearAlgebra.Hermitian(H_k_d))
-            expλ = CUDA.CuArray(exp.(-im .* Array(F_k.values) .* dt))
-            Uk_d = F_k.vectors * LinearAlgebra.Diagonal(expλ) * F_k.vectors'
-            Q_d[k] = Q_d[k+1] * Uk_d
-        end
-
-        # Fidelity overlap
-        Φ_d = CUDA.mapreduce(identity, +, conj.(target_d) .* P_d[n_steps+1])
-        Φ   = Array(Φ_d)[] / dim
-
-        # Gradient inner products
-        grad = zeros(Float64, n_ctrl, n_steps)
-        for k in 1:n_steps, j in 1:n_ctrl
-            M_d        = Q_d[k+1]' * ((-im * dt) .* H_c_d[j]) * P_d[k]
-            trM        = Array(CUDA.mapreduce(identity, +, conj.(I_d) .* M_d))[]
-            grad[j, k] = (2.0 / dim^2) * real(conj(Φ) * trM)
-        end
-
-        return grad
-    catch e
-        @warn "gradient_cuda: GPU computation failed ($e), falling back to CPU."
-        return _cpu_grape_grad()
-    end
+    # Delegates to the device-generic batched GRAPE gate gradient.  The
+    # expensive step (all propagators) is one batched `heevjBatched` when the
+    # CUDA extension is loaded; the per-(k,j) trace reductions are hoisted out of
+    # the time loop.  Falls back to the threaded CPU path otherwise.
+    return _batched_grape_gate_gradient(backend, H_drift, H_ctrl, controls, target, dt)
 end
 
 # ---------------------------------------------------------------------------

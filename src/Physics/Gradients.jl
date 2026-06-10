@@ -82,7 +82,7 @@ function compute_grape_gradient(system::AbstractQuantumSystem,
                                  target::QuantumTarget)::Matrix{Float64}
     # Step 1 & 2: build total Hamiltonians and step propagators
     H_total = build_total_hamiltonian(system, controls)
-    U_steps = compute_propagators(H_total, controls.dt)
+    U_steps = _maybe_batched_propagators(H_total, controls.dt)
 
     # Step 3 & 4: forward and backward propagators
     P = compute_forward_propagators(U_steps)   # (n_t+1) × dim × dim
@@ -92,16 +92,21 @@ function compute_grape_gradient(system::AbstractQuantumSystem,
     n_t = controls.n_timesteps
     U_total = P[n_t + 1, :, :]
 
-    # Step 6: dispatch
+    # Step 6: dispatch (honour target.metric; :auto → the per-type default)
     if target.type == "unitary"
         if target.target_unitary === nothing
             throw(ArgumentError(
                 "target.type is \"unitary\" but target.target_unitary is nothing"))
         end
-        return compute_gradient_gate(U_total, P, Q,
-                                     system.H_controls,
-                                     target.target_unitary,
-                                     controls.dt)
+        sym = target.metric === :auto ? :normalized : target.metric
+        if sym === :normalized
+            return compute_gradient_gate(U_total, P, Q, system.H_controls,
+                                         target.target_unitary, controls.dt)
+        else
+            return compute_gradient_gate(U_total, P, Q, system.H_controls,
+                                         target.target_unitary, controls.dt,
+                                         _gate_symbol_to_metric(sym))
+        end
 
     elseif target.type == "state"
         if target.target_state === nothing
@@ -115,15 +120,47 @@ function compute_grape_gradient(system::AbstractQuantumSystem,
         psi_init   = target.initial_state === nothing ?
                         target.target_state : target.initial_state
         psi_target = target.target_state
-        return compute_gradient_state(U_total, P, Q,
-                                      system.H_controls,
-                                      psi_init, psi_target,
-                                      controls.dt)
+        sym = target.metric === :auto ? :square : target.metric
+        if sym === :square
+            return compute_gradient_state(U_total, P, Q, system.H_controls,
+                                          psi_init, psi_target, controls.dt)
+        else
+            return compute_gradient_state(U_total, P, Q, system.H_controls,
+                                          psi_init, psi_target, controls.dt,
+                                          _state_symbol_to_metric(sym))
+        end
 
     else
         throw(ArgumentError(
             "Unknown target type \"$(target.type)\"; expected \"unitary\" or \"state\""))
     end
+end
+
+"""
+    _maybe_batched_propagators(H_total, dt) -> U_steps
+
+Build step propagators `U[k] = exp(-i H[k] dt)` for `H_total::(n_t, dim, dim)`,
+using the batched GPU primitive when the active device is a GPU **and** the
+batch volume warrants it (see [`plan_hybrid_execution`]); otherwise the standard
+threaded CPU `compute_propagators`.  The GPU path permutes to the primitive's
+`(dim, dim, N)` layout, runs one batched eigensolve, and permutes back — so the
+result is identical to the CPU path (validated) regardless of device.
+"""
+function _maybe_batched_propagators(H_total::Array{ComplexF64,3}, dt::Real)
+    n_t, dim, _ = size(H_total)
+    dev = get_device()
+    if dev !== :cpu && _gpu_available()
+        planner  = HybridExecutionPlanner()
+        decision = plan_hybrid_execution(dim, n_t, true, planner;
+                                         op = "propagator", batch_count = n_t)
+        if decision === :gpu
+            be = resolve_backend(dev)
+            Hb = permutedims(H_total, (2, 3, 1))                 # (dim, dim, n_t)
+            Ub = Array(batched_herm_propagators(be, Hb, Float64(dt)))
+            return permutedims(Ub, (3, 1, 2))                    # (n_t, dim, dim)
+        end
+    end
+    return compute_propagators(H_total, dt)
 end
 
 """
@@ -148,13 +185,30 @@ function compute_grape_gradient_with!(G::Matrix{Float64},
     if target.type == "unitary"
         target.target_unitary === nothing &&
             throw(ArgumentError("target.type is \"unitary\" but target.target_unitary is nothing"))
-        _gate_gradient_into!(G, U_total, P, Q, system.H_controls,
-                             target.target_unitary, dt)
+        sym = target.metric === :auto ? :normalized : target.metric
+        if sym === :normalized
+            _gate_gradient_into!(G, U_total, P, Q, system.H_controls,
+                                 target.target_unitary, dt)
+        else
+            # Non-default metric: the metric-parameterised gradient is allocating;
+            # copy it into the caller's buffer.  (Default :auto keeps the fast
+            # in-place path, so there is no regression for the common case.)
+            G .= compute_gradient_gate(U_total, P, Q, system.H_controls,
+                                       target.target_unitary, dt,
+                                       _gate_symbol_to_metric(sym))
+        end
     elseif target.type == "state"
         target.target_state === nothing &&
             throw(ArgumentError("target.type is \"state\" but target.target_state is nothing"))
-        _state_gradient_into!(G, U_total, P, Q, system.H_controls,
-                              target.target_state, target.target_state, dt)
+        sym = target.metric === :auto ? :square : target.metric
+        if sym === :square
+            _state_gradient_into!(G, U_total, P, Q, system.H_controls,
+                                  target.target_state, target.target_state, dt)
+        else
+            G .= compute_gradient_state(U_total, P, Q, system.H_controls,
+                                        target.target_state, target.target_state, dt,
+                                        _state_symbol_to_metric(sym))
+        end
     else
         throw(ArgumentError(
             "Unknown target type \"$(target.type)\"; expected \"unitary\" or \"state\""))
@@ -341,6 +395,10 @@ function compute_gradient_gate(U_total::Matrix{ComplexF64},
             inner_bare = s / dim
             G[j, k] = fidelity_grad_prefactor(Phi, inner_bare, dt, metric)
         end
+    end
+    # AverageGate's ∂F differs from the process-fidelity ∂F by a constant d/(d+1).
+    if metric isa AverageGate
+        G .*= dim / (dim + 1)
     end
     return G
 end

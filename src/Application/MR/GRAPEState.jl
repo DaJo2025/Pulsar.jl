@@ -74,10 +74,13 @@ function grape_state_kernel(waveform::Matrix{Float64}, ctrl)
     backend = _resolve_backend_auto(ctrl, waveform)
     if backend == :cpu
         return _grape_cpu(waveform, ctrl)
-    elseif backend == :metal
-        return _grape_gpu(waveform, ctrl, :metal)
-    elseif backend == :cuda
-        return _grape_gpu(waveform, ctrl, :cuda)
+    elseif backend == :metal || backend == :cuda
+        # GPU path expressed entirely through the batched primitives
+        # (Backend/BatchedPrimitives.jl).  `resolve_backend` returns the GPU
+        # backend struct when the matching extension is loaded, else a
+        # CPUBackend — so this degrades gracefully and is bit-for-bit testable
+        # on CPU against `_grape_cpu`.
+        return _grape_batched(waveform, ctrl, resolve_backend(backend))
     else
         throw(ArgumentError(
             "Unknown backend ':$(backend)'. Use :cpu (default), :metal, :cuda, or :auto."))
@@ -264,40 +267,30 @@ function _grape_cpu(waveform::Matrix{Float64}, ctrl)
     return fidelity, grad
 end
 
-# ─── GPU implementation (Metal / CUDA) ───────────────────────────────────────
+# ─── Batched implementation (CPU primitive fallback / CUDA / Metal) ──────────
 
 """
-    _grape_gpu(waveform, ctrl, gpu_sym) → (fidelity, grad)
+    _grape_batched(waveform, ctrl, backend) → (fidelity, grad)
 
-GPU-accelerated GRAPE kernel. Dispatches to `_grape_gpu_kernel` after
-resolving the backend package and element type.
+GRAPE state-transfer kernel expressed entirely through the device-dispatched
+batched primitives (`Backend/BatchedPrimitives.jl`).  The same code runs on CPU
+(`CPUBackend`, used as the graceful fallback) and GPU (`CUDABackend` →
+`heevjBatched` + `gemm_strided_batched`, `MetalBackend`).
 
-Falls back to CPU (`_grape_cpu`) if the requested package is not loaded.
+Strategy (one batch fuses every ensemble member × timestep):
+1. `batched_build_hamiltonian` assembles all `n_outer·n_t` step Hamiltonians
+   with one gemm.
+2. `batched_herm_propagators` exponentiates the whole batch (one batched
+   eigensolve on GPU).
+3. `batched_matvec` runs the forward and backward sweeps — sequential over time,
+   batched over members × state-pairs.
+4. The per-step gradient overlaps are accumulated from the (downloaded) state
+   and co-state snapshots.
+
+Bit-for-bit equal to [`_grape_cpu`](@ref) on a `CPUBackend` (validated in the
+GPU-batched tests), so the GPU result inherits that correctness.
 """
-function _grape_gpu(waveform::Matrix{Float64}, ctrl, gpu_sym::Symbol)
-    if gpu_sym == :metal && !_METAL_LOADED[]
-        @warn "Pulsar: Metal.jl not loaded — falling back to CPU backend" maxlog=1
-        return _grape_cpu(waveform, ctrl)
-    end
-    if gpu_sym == :cuda && !_CUDA_LOADED[]
-        @warn "Pulsar: CUDA.jl not loaded — falling back to CPU backend" maxlog=1
-        return _grape_cpu(waveform, ctrl)
-    end
-
-    if gpu_sym == :metal
-        Metal  = Base.loaded_modules[Base.identify_package("Metal")]
-        T      = Complex{Float32}
-        to_gpu = x -> Metal.mtl(T.(x))
-    else  # :cuda
-        CUDA   = Base.loaded_modules[Base.identify_package("CUDA")]
-        T      = ComplexF64
-        to_gpu = x -> CUDA.cu(x)
-    end
-
-    return _grape_gpu_kernel(waveform, ctrl, to_gpu, T)
-end
-
-function _grape_gpu_kernel(waveform::Matrix{Float64}, ctrl, to_gpu, ::Type{T}) where {T}
+function _grape_batched(waveform::Matrix{Float64}, ctrl, backend)
     n_ctrl  = size(waveform, 1)
     n_t     = size(waveform, 2)
     n_drift = length(ctrl.drifts)
@@ -306,114 +299,113 @@ function _grape_gpu_kernel(waveform::Matrix{Float64}, ctrl, to_gpu, ::Type{T}) w
     N_ens   = n_drift * n_pwr * n_pairs
     dim     = size(ctrl.drifts[1], 1)
 
-    # Flatten (drift, pwr) into a single ensemble index.
+    # Flatten (drift, pwr) into a single ensemble index (member axis).
     ens_pairs = [(H, p) for H in ctrl.drifts for p in ctrl.pwr_levels]
-    n_outer   = length(ens_pairs)   # n_drift × n_pwr
+    n_outer   = length(ens_pairs)
+    N         = n_outer * n_t                  # fused batch size
 
-    # ── Build ALL propagators on CPU in parallel, then single bulk GPU transfer
-    Ps_cpu    = Array{T}(undef, dim, dim, n_outer, n_t)
-    PsAdj_cpu = Array{T}(undef, dim, dim, n_outer, n_t)
-
-    n_th_gpu  = Threads.maxthreadid()
-    H_bufs_g  = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th_gpu]
-    VD_bufs_g = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th_gpu]
-    P_bufs_g  = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_th_gpu]
-
-    old_blas_g = BLAS.get_num_threads()
-    BLAS.set_num_threads(1)
-    Threads.@threads :static for idx in 1:n_outer
-        tid     = Threads.threadid()
-        H_drift, pwr = ens_pairs[idx]
-        H_buf   = H_bufs_g[tid]
-        VD_buf  = VD_bufs_g[tid]
-        P_buf   = P_bufs_g[tid]
-        for n in 1:n_t
-            H_buf .= H_drift
-            for k in 1:n_ctrl
-                @. H_buf += pwr * waveform[k, n] * ctrl.operators[k]
-            end
-            _expm_neg_i_into!(P_buf, H_buf, ctrl.pulse_dt[n], VD_buf)
-            Ps_cpu[:, :, idx, n]    = T.(P_buf)
-            PsAdj_cpu[:, :, idx, n] = T.(P_buf')
+    # Column layout: col(m, n) = (n-1)*n_outer + m  (member fastest), so
+    # reshape(·, dim, dim, n_outer, n_t)[:, :, m, n] selects member m at step n.
+    coeff  = Array{Float64}(undef, n_ctrl, N)
+    dt_vec = Array{Float64}(undef, N)
+    @inbounds for n in 1:n_t, m in 1:n_outer
+        col = (n - 1) * n_outer + m
+        pwr = ens_pairs[m][2]
+        for k in 1:n_ctrl
+            coeff[k, col] = pwr * waveform[k, n]
         end
+        dt_vec[col] = ctrl.pulse_dt[n]
     end
-    BLAS.set_num_threads(old_blas_g)
 
-    # Single host→device transfer: [dim × dim × n_outer × n_t] in one call.
-    # Reshape to 3D so each [:,:,j] slice is a concrete GPU matrix view.
-    Ps_gpu    = to_gpu(reshape(Ps_cpu,    dim, dim, n_outer * n_t))
-    PsAdj_gpu = to_gpu(reshape(PsAdj_cpu, dim, dim, n_outer * n_t))
+    # Per-member drift, tiled across timesteps → (dim, dim, N).
+    drift_stack = Array{ComplexF64}(undef, dim, dim, n_outer)
+    @inbounds for m in 1:n_outer
+        drift_stack[:, :, m] .= ens_pairs[m][1]
+    end
+    drift3 = repeat(drift_stack; outer = (1, 1, n_t))   # col layout matches coeff
 
+    ops_c = Matrix{ComplexF64}.(ctrl.operators)
+
+    # 1+2. Build all Hamiltonians and propagators as a single batch.
+    H = batched_build_hamiltonian(backend, drift3, ops_c, coeff)
+    U = batched_herm_propagators(backend, H, dt_vec)     # (dim, dim, N) on device
+    U4 = reshape(U, dim, dim, n_outer, n_t)
+
+    # Initial-state and target batches: (dim, n_pairs, n_outer) — state-pairs are
+    # the K columns propagated together; member is the batch axis.
+    ψ0 = Array{ComplexF64}(undef, dim, n_pairs, n_outer)
+    λT = Array{ComplexF64}(undef, dim, n_pairs, n_outer)
+    @inbounds for m in 1:n_outer, p in 1:n_pairs
+        ψ0[:, p, m] .= ctrl.rho_init[p]
+        λT[:, p, m] .= ctrl.rho_targ[p]
+    end
+
+    # 3. Forward sweep (store snapshots ψ[n] = state before step n).
+    ψ_all = Array{ComplexF64}(undef, dim, n_pairs, n_outer, n_t)   # host snapshots
+    ψ = _to_device_like(U, ψ0)
+    @inbounds for n in 1:n_t
+        ψ_all[:, :, :, n] = Array(ψ)
+        Uslab = U4[:, :, :, n]
+        ψ = batched_matvec(backend, Uslab, ψ)
+    end
+    ψ_final = Array(ψ)                                            # (dim, n_pairs, n_outer)
+
+    # Backward sweep (store co-states λ[n+1]).
+    λ_all = Array{ComplexF64}(undef, dim, n_pairs, n_outer, n_t)   # host snapshots
+    λ = _to_device_like(U, λT)
+    @inbounds for n in n_t:-1:1
+        λ_all[:, :, :, n] = Array(λ)                              # λ[n+1] used at step n
+        Uslab = U4[:, :, :, n]
+        λ = batched_matvec(backend, Uslab, λ; adjoint = true)
+    end
+
+    # Fidelity + overlap per (member, pair).
     fidelity_sum = 0.0
-    grad_sum     = zeros(Float64, n_ctrl, n_t)
+    z = Array{ComplexF64}(undef, n_pairs, n_outer)
+    @inbounds for m in 1:n_outer, p in 1:n_pairs
+        ψf = @view ψ_final[:, p, m]
+        z[p, m]       = state_overlap(ctrl.rho_targ[p], ψf)
+        fidelity_sum += state_fidelity(ctrl.rho_targ[p], ψf; type = ctrl.fidelity)
+    end
 
-    for s in 1:n_pairs
-        ψ0_T  = Vector{T}(ctrl.rho_init[s])
-        ψtg_T = Vector{T}(ctrl.rho_targ[s])
-
-        # ── Batched forward propagation on GPU ─────────────────────────────
-        # ψ_batch[:, i] = state for ensemble member i, shape [dim × n_outer].
-        # All n_t+1 snapshots written into a single pre-allocated
-        # [dim × n_outer × (n_t+1)] GPU tensor.
-        ψ_batch    = to_gpu(repeat(reshape(ψ0_T, dim, 1), 1, n_outer))  # [dim × n_outer]
-        ψ_fwd_all  = similar(ψ_batch, dim, n_outer, n_t + 1)
-        ψ_fwd_all[:, :, 1] = ψ_batch
-        for n in 1:n_t
-            Ps_n    = Ps_gpu[:, :, (n - 1) * n_outer + 1 : n * n_outer]
-            ψ_batch = reshape(sum(Ps_n .* reshape(ψ_batch, 1, dim, n_outer); dims = 2), dim, n_outer)
-            ψ_fwd_all[:, :, n + 1] = ψ_batch
-        end
-
-        # ── Overlap: single transfer of final states ────────────────────────
-        ψ_final_cpu = ComplexF64.(Array(ψ_fwd_all[:, :, n_t + 1]))  # [dim × n_outer]
-        ψ_targ_cpu  = ctrl.rho_targ[s]
-        z_vec = [state_overlap(ψ_targ_cpu, ψ_final_cpu[:, i]) for i in 1:n_outer]
-        for i in 1:n_outer
-            fidelity_sum += state_fidelity(ψ_targ_cpu, ψ_final_cpu[:, i]; type = ctrl.fidelity)
-        end
-
-        # ── Batched backward propagation on GPU ────────────────────────────
-        λ_batch  = to_gpu(repeat(reshape(ψtg_T, dim, 1), 1, n_outer))  # [dim × n_outer]
-        λ_all    = similar(λ_batch, dim, n_outer, n_t + 1)
-        λ_all[:, :, n_t + 1] = λ_batch
-        for n in n_t:-1:1
-            PsAdj_n = PsAdj_gpu[:, :, (n - 1) * n_outer + 1 : n * n_outer]
-            λ_batch  = reshape(sum(PsAdj_n .* reshape(λ_batch, 1, dim, n_outer); dims = 2), dim, n_outer)
-            λ_all[:, :, n] = λ_batch
-        end
-
-        # ── Single bulk host←device transfer ────────────────────────────────
-        # ψ_all_cpu[:, i, n]  = ψ[n]   (state before applying P[n])
-        # λ_all_cpu[:, i, n]  = λ[n+1] (co-state used in gradient at step n)
-        ψ_all_cpu = ComplexF64.(Array(ψ_fwd_all[:, :, 1:n_t]))        # [dim, n_outer, n_t]
-        λ_all_cpu = ComplexF64.(Array(λ_all[:, :, 2:n_t + 1]))        # [dim, n_outer, n_t]
-
-        # ── Gradient accumulation on CPU (parallel over time steps) ────────
-        Threads.@threads for n in 1:n_t
-            dt_n = ctrl.pulse_dt[n]
-            tmp  = Vector{ComplexF64}(undef, dim)   # thread-local scratch
-            for i in 1:n_outer
-                _, pwr_i = ens_pairs[i]
-                z_i   = z_vec[i]
-                λ_v   = view(λ_all_cpu, :, i, n)
-                ψ_v   = view(ψ_all_cpu, :, i, n)
+    # 4. Gradient accumulation (hoisted; threaded over time steps).
+    grad_parts = [zeros(Float64, n_ctrl, n_t) for _ in 1:Threads.maxthreadid()]
+    Threads.@threads :static for n in 1:n_t
+        tid  = Threads.threadid()
+        g    = grad_parts[tid]
+        dt_n = ctrl.pulse_dt[n]
+        tmp  = Vector{ComplexF64}(undef, dim)
+        @inbounds for m in 1:n_outer
+            pwr_m = ens_pairs[m][2]
+            for p in 1:n_pairs
+                λ_v = @view λ_all[:, p, m, n]
+                ψ_v = @view ψ_all[:, p, m, n]
+                z_i = z[p, m]
                 for k in 1:n_ctrl
-                    mul!(tmp, ctrl.operators[k], ψ_v)
+                    mul!(tmp, ops_c[k], ψ_v)
                     inner = dot(λ_v, tmp)
-                    grad_sum[k, n] += fidelity_grad_prefactor(
-                        z_i, inner, dt_n * pwr_i; type = ctrl.fidelity)
+                    g[k, n] += fidelity_grad_prefactor(
+                        z_i, inner, dt_n * pwr_m; type = ctrl.fidelity)
                 end
             end
         end
-
-    end  # state pairs
+    end
+    grad_sum = reduce(+, grad_parts)
 
     fidelity = fidelity_sum / N_ens
     grad     = grad_sum ./ N_ens
-
     fidelity = _apply_penalties!(fidelity, grad, waveform, ctrl)
-
     return fidelity, grad
+end
+
+# Move a host array onto the same device as a reference batch `ref` (a CuArray /
+# MtlArray from the GPU primitives, or a plain Array on CPU).  Uses `similar` +
+# `copyto!` so no GPU package needs to be referenced from core.
+function _to_device_like(ref, x::Array)
+    ref isa Array && return x
+    d = similar(ref, eltype(x), size(x)...)
+    copyto!(d, x)
+    return d
 end
 
 # ─── Forward-only fidelity (no gradient) ─────────────────────────────────────

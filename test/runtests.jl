@@ -45,6 +45,9 @@ end
     section("Physics – Fidelity Metric Extensions (Theme 4)")
     include("Physics/FidelityMetricsTheme4Tests.jl")
 
+    section("Physics – Fidelity Metric Coverage (all algorithms/applications)")
+    include("Physics/FidelityMetricCoverageTests.jl")
+
     section("Physics – Hardware-Aware Pulse Composition (Theme 9)")
     include("Physics/PulseCompositionTests.jl")
 
@@ -119,5 +122,11 @@ end
 
     section("Parallelization – Backend Fallback")
     include("Parallelization/BackendFallbackTests.jl")
+
+    section("Backend – Batched GPU Primitives")
+    include("Backend/GPUBatchedTests.jl")
+
+    section("Runtime – GPU Auto-Setup")
+    include("Runtime/GPUSetupTests.jl")
 
 end
