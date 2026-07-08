@@ -123,3 +123,33 @@ function epr_system(S::Rational{Int},
                          g_vals, g_euler, A_vals, A_euler, D_mhz, E_mhz,
                          S_ops, I_ops_list, H_drift, H_controls_vec, 2)
 end
+
+"""
+    shift_system(sys::EPRSpinSystem, offset_hz::Float64) -> EPRSpinSystem
+
+Return a copy of `sys` with the electron resonance shifted by `2π·offset_hz`.
+Used by `band_selective_fidelity` / `band_selective_gradient` so DEER-style
+pump/probe (multi-offset) optimisation dispatches on `EPRSpinSystem`.
+
+The offset couples to the electron `Sz` (`sys.S_ops[3]`), NOT the identity: an
+identity term is a global phase and cancels in every `|⟨ψ|U|ψ⟩|²` / `|Tr(U†U)|²`
+fidelity, which would make `band_selective_*` return the SAME value for every
+band — defeating band selectivity.  (The `QuantumSystem`/`SpinSystem` siblings in
+`Physics/Objectives.jl` currently use the identity form and share that no-op.)
+
+Defined here rather than beside the siblings because `EPRSpinSystem` is not yet
+in scope when `Objectives.jl` loads; adding a method to the existing
+`shift_system` generic from this later-loaded file is fine.
+"""
+function shift_system(sys::EPRSpinSystem, offset_hz::Float64)::EPRSpinSystem
+    H_shifted = sys.H_drift .+ (2π * offset_hz) .* sys.S_ops[3]
+    return EPRSpinSystem(
+        sys.S_electron, sys.I_nuclei, sys.dim,
+        sys.B0_tesla, sys.mw_freq_hz,
+        sys.g_vals, sys.g_euler,
+        sys.A_vals, sys.A_euler,
+        sys.D_mhz, sys.E_mhz,
+        sys.S_ops, sys.I_ops,
+        H_shifted, sys.H_controls, sys.n_controls,
+    )
+end

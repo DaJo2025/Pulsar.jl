@@ -51,6 +51,9 @@ end
     section("Physics – Hardware-Aware Pulse Composition (Theme 9)")
     include("Physics/PulseCompositionTests.jl")
 
+    section("Physics – EPR band-selective / DEER dispatch")
+    include("Physics/EPRBandSelectiveTests.jl")
+
     section("Computation – Propagator Registry (Theme 1)")
     include("Computation/PropagatorRegistryTests.jl")
 
