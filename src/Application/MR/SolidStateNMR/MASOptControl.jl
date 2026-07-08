@@ -21,7 +21,13 @@ function optimcon(sys::MASSpinSystem,
             gradient_fn = (s,c,t) -> compute_grape_gradient(s,c,t),
             config      = config)
     else
+        # Powder path: the fidelity_fn MUST average over the same orientation grid
+        # as the gradient.  Defaulting fidelity_fn to the built-in single-orientation
+        # compute_fidelity would make best-solution tracking and convergence
+        # inconsistent with the powder-averaged gradient (the optimiser would judge
+        # progress from one crystallite while stepping along the powder mean).
         return grape_optimize(sys, target, ctrl;
+            fidelity_fn = (s,c,t) -> compute_powder_fidelity(s,c,t,orientations),
             gradient_fn = (s,c,t) -> compute_grape_gradient_powder(s,c,t,orientations),
             config      = config)
     end

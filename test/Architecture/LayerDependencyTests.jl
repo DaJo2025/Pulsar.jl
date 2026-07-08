@@ -60,9 +60,11 @@
             "Physics/Sensitivity.jl",                  # depends on Optimization/GRAPE
             "Physics/PulseComposition.jl",             # depends on Optimization/GRAPE
             "Physics/MRPhysics.jl",                    # late-included (post-Application)
+            "Physics/PowderAveraging.jl",              # late-included (unified powder reduction)
             "Backend/Scheduling/DeviceRegistry.jl",    # post-Application registration
             "Computation/MASPropagators.jl",           # late-included
             "Computation/WignerRotations.jl",          # late-included
+            "Computation/SpatialTensors.jl",           # late-included (spherical-tensor engine)
             "Computation/BlochPropagator.jl",          # late-included
             "Types/NMRSpinSystem.jl",
             "Types/EPRSpinSystem.jl",

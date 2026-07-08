@@ -49,9 +49,13 @@ function compute_propagators(sys::DNPSpinSystem,
     Us = Array{ComplexF64,3}(undef, n, dim, dim)
     H_fourier = sys.H_fourier
     omega_r   = sys.omega_r
+    # Static case (ω_r = 0, e.g. non-spinning DNP): no rotor phase, and every
+    # exp(i·m·ω_r·t) = 1, so H(t) = Σ_m H_fourier[m] is time-independent.  Guard
+    # the rotor-phase offset so `rotor_phase_0/omega_r` never evaluates 0/0 = NaN.
+    phase0 = omega_r == 0 ? 0.0 : rotor_phase_0/omega_r
     H = Matrix{ComplexF64}(undef, dim, dim)
     @inbounds for k in 1:n
-        t_k = (k - 0.5)*ctrl.dt + rotor_phase_0/omega_r
+        t_k = (k - 0.5)*ctrl.dt + phase0
         fill!(H, zero(ComplexF64))
         for m in -2:2
             LinearAlgebra.axpy!(exp(im*m*omega_r*t_k), H_fourier[m], H)

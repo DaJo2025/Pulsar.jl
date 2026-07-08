@@ -21,9 +21,20 @@ function optimcon(sys::EPRSpinSystem,
 
     rotate_fn = (α, β, γ) -> _epr_oriented_sys(sys, α, β, γ)
 
-    # Pick base (non-orientation-averaged) fidelity / gradient hooks.
+    # Pick base (non-orientation-averaged) fidelity / gradient hooks.  Reaching
+    # here means bands and/or orientations are set (the no-op case returned above),
+    # so when orientations !== nothing the gradient is powder-averaged.  The
+    # fidelity MUST be averaged over the SAME grid, else best-solution tracking and
+    # convergence judge progress from a single crystallite while the step follows
+    # the powder mean.  When bands are empty we therefore supply the built-in
+    # single-orientation fidelity as the base closure (matching grape_optimize's
+    # own default) so _wrap_orient_fidelity averages it over the grid.
     if isempty(bands)
-        base_fid  = nothing
+        base_fid  = (s, c, t) -> begin
+            H_total = build_total_hamiltonian(s, c)
+            U_steps = compute_propagators(H_total, c.dt)
+            compute_fidelity(compute_total_propagator(U_steps), t)
+        end
         base_grad = (s, c, t) -> compute_grape_gradient(s, c, t)
     else
         base_fid  = (s, c, t) -> band_selective_fidelity(s, c, t, bands)
@@ -31,30 +42,31 @@ function optimcon(sys::EPRSpinSystem,
     end
 
     grad_fn = _wrap_orient_gradient(base_grad, orientations, rotate_fn)
-    if base_fid === nothing
-        return grape_optimize(sys, target, ctrl;
-                              gradient_fn = grad_fn, config = config)
-    else
-        fid_fn = _wrap_orient_fidelity(base_fid, orientations, rotate_fn)
-        return grape_optimize(sys, target, ctrl;
-                              fidelity_fn = fid_fn,
-                              gradient_fn = grad_fn,
-                              config      = config)
-    end
+    fid_fn  = _wrap_orient_fidelity(base_fid, orientations, rotate_fn)
+    return grape_optimize(sys, target, ctrl;
+                          fidelity_fn = fid_fn,
+                          gradient_fn = grad_fn,
+                          config      = config)
 end
 
 function _epr_oriented_hamiltonian(sys::EPRSpinSystem, α::Float64, β::Float64, γ::Float64)::Matrix{ComplexF64}
-    # Rotate g-tensor: gzz in lab frame (secular approximation)
-    sinβ, cosβ = sin(β), cos(β)
-    cosα, sinα = cos(α), sin(α)
-    gzz_lab = sys.g_vals[1]*sinβ^2*cosα^2 + sys.g_vals[2]*sinβ^2*sinα^2 + sys.g_vals[3]*cosβ^2
-    ω_S_lab = _EPR_μ_B_SI * sys.B0_tesla * gzz_lab / _EPR_hbar_SI
-    H = (ω_S_lab - 2π*sys.mw_freq_hz) .* sys.S_ops[3]
+    # Static secular EPR Hamiltonian via the shared spherical-tensor engine
+    # (theta_tilt = 0 ⇒ non-spinning powder: only the time-independent m=0 lab
+    # component survives).  For default g_euler/A_euler this reproduces the
+    # closed-form `gzz_lab = Σ g_i n_i²` secular projection exactly, and it now
+    # additionally honours non-trivial g-/A-tensor molecular-frame orientations.
+    Sz = sys.S_ops[3]
+    ints = SphericalInteraction[]
+    ωg = ntuple(i -> _EPR_μ_B_SI * sys.B0_tesla * sys.g_vals[i] / _EPR_hbar_SI, 3)
+    δg, ηg = principal_to_delta_eta(ωg)
+    push!(ints, shift_interaction(sum(ωg)/3 - 2π*sys.mw_freq_hz, δg, ηg, sys.g_euler, Sz))
     for (k, Ak) in enumerate(sys.A_vals)
-        Azz_lab = Ak[1]*sinβ^2*cosα^2 + Ak[2]*sinβ^2*sinα^2 + Ak[3]*cosβ^2
-        H .+= (Azz_lab * _MHZ_TO_RADS) .* (sys.S_ops[3] * sys.I_ops[k][3])
+        a = ntuple(i -> Ak[i] * _MHZ_TO_RADS, 3)
+        δA, ηA = principal_to_delta_eta(a)
+        push!(ints, shift_interaction(sum(a)/3, δA, ηA, sys.A_euler[k],
+                                      Matrix{ComplexF64}(Sz * sys.I_ops[k][3])))
     end
-    return H
+    return build_orientation_fourier(ints, (α, β, γ), sys.dim; theta_tilt = 0.0)[0]
 end
 
 function _epr_oriented_sys(sys::EPRSpinSystem, α::Float64, β::Float64, γ::Float64)::EPRSpinSystem

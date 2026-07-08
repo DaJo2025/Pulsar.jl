@@ -42,22 +42,22 @@ end
 """
     _rotate_dnp_system(sys::DNPSpinSystem, α, β, γ) -> DNPSpinSystem
 
-Return a copy of sys with Euler angles shifted for orientation (α,β,γ).
+Return a copy of `sys` with its rotor-modulated Fourier components rebuilt for
+crystallite orientation (α,β,γ) via the shared spherical-tensor engine
+(`dnp_oriented_fourier`).  The crystallite orientation is applied as the common
+molecular→rotor rotation for ALL anisotropic interactions — the physically
+correct operation — rather than shifting each interaction's PAS Euler angles
+independently (which is only valid for a single shared-axis interaction and was
+why the previous implementation produced an orientation-independent, no-op
+powder average).
 """
 function _rotate_dnp_system(sys::DNPSpinSystem, α::Float64, β::Float64, γ::Float64)::DNPSpinSystem
-    new_csa_e = [CSATensor(c.delta_iso, c.delta_aniso, c.eta,
-                            (c.euler_PAS_to_MF[1]+α, c.euler_PAS_to_MF[2]+β, c.euler_PAS_to_MF[3]+γ))
-                 for c in sys.csa_electron]
-    new_csa_n = [CSATensor(c.delta_iso, c.delta_aniso, c.eta,
-                            (c.euler_PAS_to_MF[1]+α, c.euler_PAS_to_MF[2]+β, c.euler_PAS_to_MF[3]+γ))
-                 for c in sys.csa_nuclei]
-    new_dip = [DipolarCoupling(d.spin_i, d.spin_j, d.b_ij,
-                               (d.euler_DD_to_MF[1]+α, d.euler_DD_to_MF[2]+β, d.euler_DD_to_MF[3]+γ))
-               for d in sys.dipolar]
-    dnp_system(sys.S_electron, sys.I_nuclei, sys.B0_tesla,
-               sys.mw_freq_hz, sys.omega_r/(2π);
-               g_vals=sys.g_vals, g_euler=sys.g_euler,
-               A_vals=sys.A_vals, A_euler=sys.A_euler,
-               csa_electron=new_csa_e, csa_nuclei=new_csa_n,
-               dipolar=new_dip, rf_freq_hz=sys.rf_freq_hz)
+    Hf = dnp_oriented_fourier(sys, α, β, γ)
+    return DNPSpinSystem(sys.S_electron, sys.I_nuclei, sys.g_vals, sys.g_euler,
+                         sys.A_vals, sys.A_euler, sys.csa_electron, sys.csa_nuclei,
+                         sys.dipolar, sys.omega_r, sys.rotor_period_s, Hf,
+                         sys.B0_tesla, sys.mw_freq_hz, sys.rf_freq_hz,
+                         sys.dim, sys.S_ops, sys.I_ops, sys.H_ctrl_mw, sys.H_ctrl_rf,
+                         copy(Hf[0]), sys.H_controls, sys.n_controls,
+                         sys.interactions, sys.H0)
 end

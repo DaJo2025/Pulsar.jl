@@ -35,6 +35,12 @@ electron spin operators for microwave control.
 - `H_drift`       — nominal zero-order drift (m=0 Fourier term)
 - `H_ctrl`        — vcat(H_ctrl_mw, H_ctrl_rf) for interface compatibility
 - `n_controls`
+- `interactions`  — anisotropic `SphericalInteraction`s (g-anisotropy, hyperfine,
+  dipolar, CSA) driving the orientation dependence, in molecular-frame PAS Euler
+  angles.  Powder averaging rotates these through the crystallite orientation via
+  the shared spherical-tensor engine (`build_orientation_fourier`).
+- `H0`            — orientation-INDEPENDENT drift (nuclear Zeeman + any
+  `extra_drift_terms`); added into `H_fourier[0]` for every crystallite.
 """
 struct DNPSpinSystem <: AbstractQuantumSystem
     S_electron    :: Rational{Int}
@@ -60,6 +66,8 @@ struct DNPSpinSystem <: AbstractQuantumSystem
     H_drift       :: Matrix{ComplexF64}
     H_controls    :: Vector{Matrix{ComplexF64}}
     n_controls    :: Int
+    interactions  :: Vector{SphericalInteraction}
+    H0            :: Matrix{ComplexF64}
 end
 
 """
@@ -172,32 +180,78 @@ function dnp_system(S_electron::Rational{Int},
         ))
     end
 
-    # Nominal drift (m=0 term)
-    g_iso = sum(g_vals)/3
-    ω_S   = _EPR_μ_B_SI * B0_tesla * g_iso / _EPR_hbar_SI
-    H_drift = (ω_S - 2π*mw_freq_hz) .* Sz_full
-
-    # Nuclear Zeeman (per-nucleus γ, rotating frame of rf carrier)
+    # ── Orientation-INDEPENDENT drift H0 (nuclear Zeeman + extra terms) ──────
+    # The electron Zeeman offset and the (an)isotropic hyperfine/g/dipolar/CSA
+    # interactions are built below as SphericalInteractions so they rotate with
+    # the crystallite; only the purely isotropic nuclear Zeeman lives in H0.
+    H0 = zeros(ComplexF64, dim, dim)
     for (k, _) in enumerate(I_nuclei)
         ω_I = 2π * γn_vec[k] * B0_tesla
-        H_drift .+= (ω_I - 2π*rf_freq_hz) .* I_ops_list[k][3]
+        H0 .+= (ω_I - 2π*rf_freq_hz) .* I_ops_list[k][3]
     end
-
-    # Isotropic hyperfine (secular) — A_vals in Hz → rad/s via 2π
-    for (k, Ak) in enumerate(A_vals)
-        Azz = 2π * sum(Ak)/3
-        H_drift .+= Azz .* (Sz_full * I_ops_list[k][3])
-    end
-
-    # User-supplied extra drift terms (rad/s)
     for Hx in extra_drift_terms
         size(Hx) == (dim, dim) ||
             throw(ArgumentError("extra_drift_terms entry size $(size(Hx)) ≠ ($dim,$dim)"))
-        H_drift .+= Hx
+        H0 .+= Hx
     end
 
-    H_fourier = Dict(m => zeros(ComplexF64, dim, dim) for m in -2:2)
-    H_fourier[0] .= H_drift
+    # ── Anisotropic interactions (spherical-tensor engine) ───────────────────
+    interactions = SphericalInteraction[]
+
+    # Electron Zeeman with g-anisotropy: iso offset (ω_S,iso − 2π·mw) on Sz plus
+    # the rank-2 g-tensor anisotropy.  Principal Zeeman frequencies ω_i = μ_B B0 g_i/ħ.
+    ωg = ntuple(i -> _EPR_μ_B_SI * B0_tesla * g_vals[i] / _EPR_hbar_SI, 3)
+    δg, ηg = principal_to_delta_eta(ωg)
+    ω_S_iso = sum(ωg)/3
+    push!(interactions,
+          shift_interaction(ω_S_iso - 2π*mw_freq_hz, δg, ηg, g_euler, Sz_full))
+
+    # Hyperfine per nucleus: isotropic + rank-2 anisotropy, secular Sz·Iz plus the
+    # PSEUDOSECULAR Sz·I± that enables the solid effect.  A_vals in Hz → rad/s.
+    for (k, Ak) in enumerate(A_vals)
+        a = ntuple(i -> 2π * Ak[i], 3)
+        A_iso = sum(a)/3
+        δA, ηA = principal_to_delta_eta(a)
+        Ixk, Iyk, Izk = I_ops_list[k]
+        push!(interactions,
+              hyperfine_interaction(A_iso, δA, ηA, A_euler[k], Sz_full, Ixk, Iyk, Izk))
+    end
+
+    # Electron CSA (rank-2 shift on Sz) and nuclear CSA (rank-2 shift on Iz_k).
+    for c in csa_electron
+        push!(interactions,
+              shift_interaction(c.delta_iso, c.delta_aniso, c.eta, c.euler_PAS_to_MF, Sz_full))
+    end
+    for (k, c) in enumerate(csa_nuclei)
+        k <= length(I_ops_list) || break
+        push!(interactions,
+              shift_interaction(c.delta_iso, c.delta_aniso, c.eta, c.euler_PAS_to_MF,
+                                I_ops_list[k][3]))
+    end
+
+    # Dipolar couplings.  Index convention: 1 = electron, k+1 = nucleus k.
+    # Electron–nucleus couplings are heteronuclear-secular (2·Sz·Iz); nucleus–
+    # nucleus couplings are homonuclear (flip-flop-containing rank-2 operator).
+    _spin_xyz(idx) = idx == 1 ? (Sx_full, Sy_full, Sz_full) : I_ops_list[idx-1]
+    for dd in dipolar
+        oxi, oyi, ozi = _spin_xyz(dd.spin_i)
+        oxj, oyj, ozj = _spin_xyz(dd.spin_j)
+        if dd.spin_i == 1 || dd.spin_j == 1
+            push!(interactions,
+                  dipolar_hetero_interaction(dd.b_ij, dd.euler_DD_to_MF, ozi, ozj))
+        else
+            push!(interactions,
+                  dipolar_homo_interaction(dd.b_ij, dd.euler_DD_to_MF,
+                                           oxi, oyi, ozi, oxj, oyj, ozj))
+        end
+    end
+
+    # ── Build reference-orientation Fourier components via the shared engine ──
+    # MAS (ω_r > 0) ⇒ magic-angle rotor projection; ω_r = 0 ⇒ static powder.
+    tilt = omega_r > 0 ? MAGIC_ANGLE : 0.0
+    H_fourier = build_orientation_fourier(interactions, (0.0, 0.0, 0.0), dim;
+                                          theta_tilt = tilt, H0 = H0)
+    H_drift = copy(H_fourier[0])
 
     H_ctrl_mw = Matrix{ComplexF64}[Sx_full, Sy_full]
     H_ctrl_rf = if isempty(I_nuclei)
@@ -213,8 +267,24 @@ function dnp_system(S_electron::Rational{Int},
 
     return DNPSpinSystem(S_electron, I_nuclei, g_vals, g_euler,
                          A_vals, A_euler, csa_electron, csa_nuclei, dipolar,
-                         omega_r, 2π/omega_r, H_fourier,
+                         omega_r, omega_r > 0 ? 2π/omega_r : Inf, H_fourier,
                          B0_tesla, mw_freq_hz, rf_freq_hz,
                          dim, S_ops, I_ops_list,
-                         H_ctrl_mw, H_ctrl_rf, H_drift, H_controls_all, length(H_controls_all))
+                         H_ctrl_mw, H_ctrl_rf, H_drift, H_controls_all,
+                         length(H_controls_all), interactions, H0)
+end
+
+"""
+    dnp_oriented_fourier(sys::DNPSpinSystem, α, β, γ) -> Dict{Int,Matrix{ComplexF64}}
+
+Rotor-modulated Fourier components of `sys` for crystallite orientation (α,β,γ),
+rebuilt from the stored anisotropic interactions via the shared spherical-tensor
+engine.  This is what makes DNP powder averaging real: each crystallite sees a
+genuinely different (an)isotropic Hamiltonian.
+"""
+function dnp_oriented_fourier(sys::DNPSpinSystem,
+                              α::Float64, β::Float64, γ::Float64)::Dict{Int,Matrix{ComplexF64}}
+    tilt = sys.omega_r > 0 ? MAGIC_ANGLE : 0.0
+    return build_orientation_fourier(sys.interactions, (α, β, γ), sys.dim;
+                                     theta_tilt = tilt, H0 = sys.H0)
 end

@@ -187,6 +187,32 @@ function compute_grape_gradient_powder(sys::MASSpinSystem,
     return G_total
 end
 
+"""
+    compute_powder_fidelity(sys::MASSpinSystem, ctrl, target, orientations) -> Float64
+
+Powder-averaged fidelity `Σ_Ω wΩ FΩ` over the **same** crystallite grid used by
+[`compute_grape_gradient_powder`].  For each orientation the crystallite is
+rotated (`rotate_spin_system`), the rotor-modulated step propagators are built
+(`compute_propagators(::MASSpinSystem, …)`), and the total propagator is scored
+with [`compute_fidelity`] (handles both unitary and state targets).
+
+This is the fidelity partner of the powder gradient.  Pairing it as the
+optimiser's `fidelity_fn` is essential: a single-orientation fidelity paired
+with a powder-averaged gradient makes best-solution tracking, convergence, and
+the reported fidelity inconsistent with the direction actually being optimised.
+"""
+function compute_powder_fidelity(sys::MASSpinSystem,
+                                  ctrl::ControlSequence,
+                                  target::QuantumTarget,
+                                  orientations::Vector{NTuple{4,Float64}})::Float64
+    return powder_average_scalar(orientations) do α, β, γ
+        # rotate_spin_system preserves sys.H_controls (it no longer rebuilds via
+        # mas_spin_system), so the oriented system carries the caller's scaled drive.
+        sys_o = rotate_spin_system(sys, α, β, γ)
+        compute_fidelity(compute_total_propagator(compute_propagators(sys_o, ctrl)), target)
+    end
+end
+
 # ============================================================================
 # DNP GRAPE gradient
 # ============================================================================

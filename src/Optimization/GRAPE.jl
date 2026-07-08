@@ -470,8 +470,30 @@ function grape_optimize(
     system::AbstractQuantumSystem,
     target::QuantumTarget,
     controls_init::ControlSequence;
-    config::GRAPEConfig = GRAPEConfig()
+    config::GRAPEConfig = GRAPEConfig(),
+    fidelity_fn::Union{Nothing,Function}              = nothing,
+    gradient_fn::Union{Nothing,Function}              = nothing,
+    fidelity_and_gradient_fn::Union{Nothing,Function} = nothing,
+    penalty_fns::Vector{Function}      = Function[],
+    penalty_grad_fns::Vector{Function} = Function[],
 )::OptimizationResult
+
+    # Physics-hook path: when any custom hook/penalty is supplied, dispatch to the
+    # generic hook driver.  This typed method is MORE specific than the untyped
+    # hook overload, so without this delegation those kwargs would be rejected with
+    # a MethodError for every concrete AbstractQuantumSystem (MAS/EPR/DNP/Bloch) —
+    # the historical grape_optimize "dispatch overlap" bug.
+    if fidelity_fn !== nothing || gradient_fn !== nothing ||
+       fidelity_and_gradient_fn !== nothing ||
+       !isempty(penalty_fns) || !isempty(penalty_grad_fns)
+        return _grape_optimize_hooks(system, target, controls_init;
+            fidelity_fn              = fidelity_fn,
+            gradient_fn              = gradient_fn,
+            fidelity_and_gradient_fn = fidelity_and_gradient_fn,
+            penalty_fns              = penalty_fns,
+            penalty_grad_fns         = penalty_grad_fns,
+            config                   = config)
+    end
 
     if !(config.parameterization isa PiecewiseConstant)
         return _grape_optimize_param(system, target, controls_init, config)
@@ -1243,22 +1265,31 @@ any physical system — Bloch, Lindblad, MAS, etc.
 
 With default arguments behaviour is identical to the standard method.
 """
-function grape_optimize(
+grape_optimize(system, target, controls_init::ControlSequence; kwargs...) =
+    _grape_optimize_hooks(system, target, controls_init; kwargs...)
+
+# Generic hook-based GRAPE driver.  Reached via the untyped `grape_optimize`
+# overload above, and via the typed (AbstractQuantumSystem, QuantumTarget) method
+# when custom hooks/penalties are supplied (see the delegation there).
+function _grape_optimize_hooks(
     system,
     target,
     controls_init::ControlSequence;
-    fidelity_fn::Function = (s,c,t) -> begin
-        H_total = build_total_hamiltonian(s, c)
-        U_steps = compute_propagators(H_total, c.dt)
-        U_total = compute_total_propagator(U_steps)
-        compute_fidelity(U_total, t)
-    end,
-    gradient_fn::Function = (s,c,t) -> compute_grape_gradient(s,c,t),
+    fidelity_fn::Union{Nothing,Function} = nothing,
+    gradient_fn::Union{Nothing,Function} = nothing,
     fidelity_and_gradient_fn::Union{Nothing,Function} = nothing,
     penalty_fns::Vector{Function}   = Function[],
     penalty_grad_fns::Vector{Function} = Function[],
     config::GRAPEConfig = GRAPEConfig()
 )::OptimizationResult
+
+    fidelity_fn = fidelity_fn === nothing ? (s,c,t) -> begin
+        H_total = build_total_hamiltonian(s, c)
+        U_steps = compute_propagators(H_total, c.dt)
+        U_total = compute_total_propagator(U_steps)
+        compute_fidelity(U_total, t)
+    end : fidelity_fn
+    gradient_fn = gradient_fn === nothing ? (s,c,t) -> compute_grape_gradient(s,c,t) : gradient_fn
 
     if !(config.parameterization isa PiecewiseConstant)
         return _grape_optimize_param(system, target, controls_init, config;

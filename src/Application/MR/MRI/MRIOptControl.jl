@@ -50,8 +50,12 @@ function optimcon(sys::BlochSystem,
         return F, G_flat
     end
 
-    # Wrap the MRIControlSequence amplitudes into a ControlSequence for the hook interface
-    ctrl_seq = ControlSequence(ctrl.amplitudes, ctrl.dt, ctrl.n_steps)
+    # Wrap the MRIControlSequence amplitudes into a ControlSequence for the hook
+    # interface.  ctrl.amplitudes is [5 × n_steps] (B1x,B1y,Gx,Gy,Gz stacked),
+    # i.e. the [n_controls × n_timesteps] layout — so use the 4-arg backward-compat
+    # constructor, which transposes it into the internal [n_steps × n_controls]
+    # layout.  The 3-arg constructor would reject it (it validates rows == n_steps).
+    ctrl_seq = ControlSequence(ctrl.amplitudes, ctrl.dt, ctrl.total_time, ctrl.n_steps)
 
     grape_optimize(sys, nothing, ctrl_seq;
         fidelity_and_gradient_fn = fidelity_and_gradient_fn,

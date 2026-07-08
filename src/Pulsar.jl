@@ -282,6 +282,14 @@ include("Backend/Scheduling/DeviceRegistry.jl")
 include("Runtime/GPUSetup.jl")
 
 # ---------------------------------------------------------------------------
+# Wigner rotations + general spherical-tensor engine (Computation, LinearAlgebra
+# only). Included before the solid-state Types because DNPSpinSystem stores
+# SphericalInteraction values in its fields.
+# ---------------------------------------------------------------------------
+include("Computation/WignerRotations.jl")
+include("Computation/SpatialTensors.jl")   # general spherical-tensor anisotropy engine
+
+# ---------------------------------------------------------------------------
 # Layer 1a extension: NMR spin system types (solution NMR + heteronuclear)
 # ---------------------------------------------------------------------------
 include("Types/NMRSpinSystem.jl")
@@ -310,10 +318,10 @@ include("Application/MR/EnsembleBuilder.jl")
 
 # New computation (after new types)
 include("Computation/MASPropagators.jl")
-include("Computation/WignerRotations.jl")
 include("Computation/BlochPropagator.jl")
 
 # New physics layer — depends on new types
+include("Physics/PowderAveraging.jl")   # unified crystallite/powder reduction
 include("Physics/MRPhysics.jl")
 
 # New application layers
@@ -685,13 +693,24 @@ export shift_system
 export bloch_fidelity, slice_profile_fidelity, bloch_forward_pass, bloch_adjoint_pass
 export dnp_polarization_fidelity
 export electron_polarized_state, nuclear_polarization_operator
+export dnp_oriented_fourier
 
 # MAS
 export build_mas_hamiltonian, rotate_spin_system, compute_grape_gradient_powder
+export compute_powder_fidelity
 export compute_propagators
+
+# Unified powder/crystallite averaging (shared by MAS/EPR/DNP)
+export powder_average_scalar, powder_average_matrix, orient_fidelity, orient_gradient
 
 # Wigner
 export wigner_d2, wigner_D2, powder_grid
+
+# General spherical-tensor anisotropy engine (shared by MAS/EPR/DNP)
+export SphericalInteraction, MAGIC_ANGLE
+export interaction_fourier!, build_orientation_fourier
+export shift_interaction, dipolar_hetero_interaction, dipolar_homo_interaction
+export hyperfine_interaction, principal_to_delta_eta
 
 # MRI penalties
 export sar_penalty, sar_gradient, slew_rate_penalty, slew_rate_gradient

@@ -85,12 +85,14 @@ function mas_spin_system(base_system::MRSpinSystem,
     rotor_period_s = 2π / omega_r
 
     dim = base_system.dim
-    H_drift_zero = zeros(ComplexF64, dim, dim)
+    H_drift_zero = zeros(ComplexF64, dim, dim)   # time dependence lives in H_fourier
 
-    H_fourier = Dict{Int,Matrix{ComplexF64}}(m => zeros(ComplexF64, dim, dim) for m in -2:2)
-
-    _add_csa_fourier!(H_fourier, base_system, csa)
-    _add_dipolar_fourier!(H_fourier, base_system, dipolar)
+    # Rotor-modulated Fourier components via the shared spherical-tensor engine,
+    # WITH the magic-angle rotor projection (the hand-coded builders this replaces
+    # omitted it, so the static m=0 anisotropy did not average out under spinning).
+    interactions = _mas_interactions(base_system, csa, dipolar)
+    H_fourier = build_orientation_fourier(interactions, (0.0, 0.0, 0.0), dim;
+                                          theta_tilt = MAGIC_ANGLE)
 
     # Build control operators: [Ix_1, Iy_1, Ix_2, Iy_2, ...]
     H_controls = Matrix{ComplexF64}[]
@@ -104,66 +106,30 @@ function mas_spin_system(base_system::MRSpinSystem,
                          dim, length(H_controls))
 end
 
-# Internal: add CSA Fourier components
-function _add_csa_fourier!(H_fourier::Dict{Int,Matrix{ComplexF64}},
-                            sys::MRSpinSystem,
-                            tensors::Vector{CSATensor})
+"""
+    _mas_interactions(sys::MRSpinSystem, csa, dipolar) -> Vector{SphericalInteraction}
+
+Translate the MAS CSA and dipolar tensors into engine `SphericalInteraction`s:
+each CSA is a secular shift on `Iz_i` (now honouring its asymmetry η, previously
+dropped); each dipolar coupling is heteronuclear-secular `b·2·Iz_i·Iz_j`.
+"""
+function _mas_interactions(sys::MRSpinSystem,
+                           csa::Vector{CSATensor},
+                           dipolar::Vector{DipolarCoupling})::Vector{SphericalInteraction}
     n = sys.n_spins
-    for (i, csa) in enumerate(tensors)
+    ints = SphericalInteraction[]
+    for (i, c) in enumerate(csa)
         i <= n || break
-        Iz_i = sys.Iz[i]
-
-        T20_PAS   =  csa.delta_aniso * sqrt(2/3)
-
-        α, β, γ = csa.euler_PAS_to_MF
-        cosβ = cos(β)
-        sinβ = sin(β)
-
-        # Secular (m=0) term
-        H_fourier[0] .+= (csa.delta_iso + T20_PAS * (3*cosβ^2 - 1)/2) .* Iz_i
-
-        if sinβ > 1e-12
-            # m=±1 sidebands
-            c1 = -sqrt(3/2) * T20_PAS * sinβ * cosβ
-            H_fourier[1]  .+= c1 * exp(-1im*α) .* Iz_i
-            H_fourier[-1] .+= conj(c1 * exp(-1im*α)) .* Iz_i
-            # m=±2 sidebands
-            c2 = sqrt(3/8) * T20_PAS * sinβ^2
-            H_fourier[2]  .+= c2 * exp(-2im*α) .* Iz_i
-            H_fourier[-2] .+= conj(c2 * exp(-2im*α)) .* Iz_i
-        end
+        push!(ints, shift_interaction(c.delta_iso, c.delta_aniso, c.eta,
+                                      c.euler_PAS_to_MF, Matrix{ComplexF64}(sys.Iz[i])))
     end
-end
-
-# Internal: add dipolar Fourier components
-function _add_dipolar_fourier!(H_fourier::Dict{Int,Matrix{ComplexF64}},
-                                sys::MRSpinSystem,
-                                dipolar::Vector{DipolarCoupling})
-    n = sys.n_spins
     for dd in dipolar
-        i, j = dd.spin_i, dd.spin_j
-        (i <= n && j <= n) || continue
-        Iz_i = sys.Iz[i]
-        Iz_j = sys.Iz[j]
-        IzIz = Iz_i * Iz_j
-
-        α, β, γ = dd.euler_DD_to_MF
-        cosβ = cos(β)
-        sinβ = sin(β)
-
-        # Secular dipolar: b_ij (3cos²β-1)/2 * 2 IzIz
-        d_secular = dd.b_ij * (3*cosβ^2 - 1) / 2
-        H_fourier[0] .+= 2 * d_secular .* IzIz
-
-        if sinβ > 1e-12
-            c1 = -dd.b_ij * sqrt(6.0) * sinβ * cosβ
-            H_fourier[1]  .+= c1 * exp(-1im*(α+γ)) .* IzIz
-            H_fourier[-1] .+= conj(c1 * exp(-1im*(α+γ))) .* IzIz
-            c2 = dd.b_ij * sqrt(6.0)/4 * sinβ^2
-            H_fourier[2]  .+= c2 * exp(-2im*(α+γ)) .* IzIz
-            H_fourier[-2] .+= conj(c2 * exp(-2im*(α+γ))) .* IzIz
-        end
+        (dd.spin_i <= n && dd.spin_j <= n) || continue
+        push!(ints, dipolar_hetero_interaction(dd.b_ij, dd.euler_DD_to_MF,
+                                               Matrix{ComplexF64}(sys.Iz[dd.spin_i]),
+                                               Matrix{ComplexF64}(sys.Iz[dd.spin_j])))
     end
+    return ints
 end
 
 """
@@ -184,16 +150,19 @@ end
 """
     rotate_spin_system(sys::MASSpinSystem, α, β, γ) -> MASSpinSystem
 
-Return a copy of `sys` with Fourier components recomputed for crystal orientation (α,β,γ).
-Used for powder averaging.
+Return a copy of `sys` with Fourier components recomputed for crystallite
+orientation (α,β,γ), used for powder averaging.  The crystallite is applied as
+the common molecular→rotor rotation for every interaction via the shared engine
+(`build_orientation_fourier`) — the physically correct composition, rather than
+shifting each tensor's PAS Euler angles independently.  Crucially this preserves
+the caller's `sys.H_controls` (a rebuild via `mas_spin_system` would regenerate
+DEFAULT unscaled controls), so externally-scaled control operators survive.
 """
 function rotate_spin_system(sys::MASSpinSystem, α::Float64, β::Float64, γ::Float64)::MASSpinSystem
-    new_csa = [CSATensor(c.delta_iso, c.delta_aniso, c.eta,
-                         (c.euler_PAS_to_MF[1]+α, c.euler_PAS_to_MF[2]+β, c.euler_PAS_to_MF[3]+γ))
-               for c in sys.csa]
-    new_dip = [DipolarCoupling(d.spin_i, d.spin_j, d.b_ij,
-                               (d.euler_DD_to_MF[1]+α, d.euler_DD_to_MF[2]+β, d.euler_DD_to_MF[3]+γ))
-               for d in sys.dipolar]
-    return mas_spin_system(sys.base_system, sys.omega_r/(2π);
-                           csa=new_csa, dipolar=new_dip)
+    interactions = _mas_interactions(sys.base_system, sys.csa, sys.dipolar)
+    H_fourier = build_orientation_fourier(interactions, (α, β, γ), sys.dim;
+                                          theta_tilt = MAGIC_ANGLE)
+    return MASSpinSystem(sys.base_system, sys.csa, sys.dipolar, sys.omega_r,
+                         sys.rotor_period_s, H_fourier, sys.H_drift, sys.H_controls,
+                         sys.dim, sys.n_controls)
 end
