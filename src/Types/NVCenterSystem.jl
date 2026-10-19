@@ -292,3 +292,20 @@ function nv_center_system(B0_tesla        :: Float64;
         collapse_ops, metadata,
     )
 end
+
+# ─── Operators for ensemble axes (see Types/EnsembleAveraging.jl) ─────────────
+
+"""
+    offset_operator(sys::NVCenterSystem) -> Matrix{ComplexF64}
+
+|−1⟩⟨−1| (⊗ 1 on the nuclei) — what a detuning δ of the driven |0⟩↔|−1⟩
+transition from the carrier adds in `nv_center_system` (the carrier is
+subtracted from the |−1⟩ level only), so an `OffsetAxis` value δ equals
+`carrier_hz − δ`. For a B0 or zero-field-splitting fluctuation use a `TermAxis`
+on Sz or Sz² instead — those also move |+1⟩.
+"""
+function offset_operator(sys::NVCenterSystem)
+    dim_e = sys.dim == 2 ? 2 : 3                      # :qubit subspace {|0⟩, |−1⟩} or full spin-1
+    P = zeros(ComplexF64, dim_e, dim_e); P[dim_e, dim_e] = 1
+    return sys.n_nuclei == 0 ? P : kron(P, Matrix{ComplexF64}(I, 2^sys.n_nuclei, 2^sys.n_nuclei))
+end

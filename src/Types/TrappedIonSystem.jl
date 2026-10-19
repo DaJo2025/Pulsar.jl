@@ -170,3 +170,19 @@ function trapped_ion_system(freq_hz      :: Vector{Float64},
         collapse_ops, metadata,
     )
 end
+
+# ─── Operators for ensemble axes (see Types/EnsembleAveraging.jl) ─────────────
+
+"""
+    offset_operator(sys::TrappedIonSystem; qubits = :all) -> Matrix{ComplexF64}
+
+Σ σz_i/2 over `qubits` — what a qubit-frequency shift δ (Hz, at a fixed carrier)
+adds in `trapped_ion_system`, so `OffsetAxis(δs; operator = offset_operator(sys))`
+equals `freq_hz .+ δ`. The same operator as the MR offset Σ Iz_i, and as the
+neutral-atom and spin-qubit builders; the transmon and NV builders use the
+number / projector form instead (opposite sign on the qubit subspace).
+"""
+function offset_operator(sys::TrappedIonSystem; qubits = :all)
+    idx = qubits === :all ? (1:sys.n_ions) : qubits
+    return sum(_embed_site(ComplexF64[0.5 0; 0 -0.5], i, sys.n_ions, 2) for i in idx)
+end

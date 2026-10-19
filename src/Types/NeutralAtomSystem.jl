@@ -174,3 +174,27 @@ function neutral_atom_system(freq_hz         :: Vector{Float64},
         collapse_ops, metadata,
     )
 end
+
+# ─── Operators for ensemble axes (see Types/EnsembleAveraging.jl) ─────────────
+
+"""
+    offset_operator(sys::NeutralAtomSystem; qubits = :all) -> Matrix{ComplexF64}
+
+Σ σz_i/2 over `qubits` — what a frequency shift δ (Hz, at a fixed carrier) adds
+in `neutral_atom_system` (see `offset_operator(::TrappedIonSystem)`).
+"""
+function offset_operator(sys::NeutralAtomSystem; qubits = :all)
+    idx = qubits === :all ? (1:sys.n_atoms) : qubits
+    return sum(_embed_site(ComplexF64[0.5 0; 0 -0.5], i, sys.n_atoms, 2) for i in idx)
+end
+
+"""
+    coupling_operator(sys::NeutralAtomSystem, i, j) -> Matrix{ComplexF64}
+
+The blockade projector |rr⟩⟨rr| on atoms `i`, `j` that `V_rydberg_hz[i, j]`
+multiplies (|r⟩ = |1⟩, as in the builder).
+"""
+function coupling_operator(sys::NeutralAtomSystem, i::Int, j::Int)
+    P_r = ComplexF64[0 0; 0 1]
+    return _embed_site(P_r, i, sys.n_atoms, 2) * _embed_site(P_r, j, sys.n_atoms, 2)
+end

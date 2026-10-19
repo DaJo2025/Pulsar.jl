@@ -173,3 +173,31 @@ function spin_qubit_system(freq_hz    :: Vector{Float64},
         collapse_ops, metadata,
     )
 end
+
+# ─── Operators for ensemble axes (see Types/EnsembleAveraging.jl) ─────────────
+
+"""
+    offset_operator(sys::SpinQubitSystem; qubits = :all) -> Matrix{ComplexF64}
+
+Σ σz_i/2 over `qubits` — what a Zeeman-frequency shift δ (Hz, at a fixed carrier)
+adds in `spin_qubit_system` (see `offset_operator(::TrappedIonSystem)`).
+"""
+function offset_operator(sys::SpinQubitSystem; qubits = :all)
+    idx = qubits === :all ? (1:sys.n_spins) : qubits
+    return sum(_embed_site(ComplexF64[0.5 0; 0 -0.5], i, sys.n_spins, 2) for i in idx)
+end
+
+"""
+    coupling_operator(sys::SpinQubitSystem, i, j; kind = :isotropic) -> Matrix{ComplexF64}
+
+The exchange operator `J_hz[i, j]` multiplies, (σx σx + σy σy + σz σz)/4 = S_i·S_j
+(`:isotropic`, the builder's form and the MR J-coupling form), or σz σz/4 (`:zz`).
+"""
+function coupling_operator(sys::SpinQubitSystem, i::Int, j::Int; kind::Symbol = :isotropic)
+    n = sys.n_spins
+    σs = (ComplexF64[0 1; 1 0], ComplexF64[0 -im; im 0], ComplexF64[1 0; 0 -1])
+    pair(σ) = _embed_site(σ, i, n, 2) * _embed_site(σ, j, n, 2) ./ 4
+    kind === :zz && return pair(σs[3])
+    kind === :isotropic || throw(ArgumentError("kind must be :isotropic or :zz"))
+    return sum(pair(σ) for σ in σs)
+end

@@ -222,3 +222,35 @@ function transmon_system(freq_hz     :: Vector{Float64},
         collapse_ops, leakage_indices, metadata,
     )
 end
+
+# ─── Operators for ensemble axes (see Types/EnsembleAveraging.jl) ─────────────
+# Exactly what transmon_system multiplies the parameter by, so an OffsetAxis
+# value δ (Hz) equals freq_hz .+ δ at a fixed carrier, and a CouplingAxis value
+# equals coupling_hz[i, j] + ΔJ.
+
+"""
+    offset_operator(sys::TransmonSystem; qubits = :all) -> Matrix{ComplexF64}
+
+Σ n̂_i over `qubits` — the operator a qubit-frequency shift couples to in
+`transmon_system` (Δω·n̂; every level k moves by k·δ, the anharmonicity is
+unchanged). On the qubit subspace n̂ = (1 − σz)/2, i.e. −σz/2 plus a global phase:
+the opposite sign to the σz/2 platforms (see `offset_operator(::TrappedIonSystem)`).
+"""
+function offset_operator(sys::TransmonSystem; qubits = :all)
+    idx = qubits === :all ? (1:sys.n_qubits) : qubits
+    n̂ = diagm(ComplexF64.(0:sys.n_levels-1))
+    return sum(_embed_site(n̂, i, sys.n_qubits, sys.n_levels) for i in idx)
+end
+
+"""
+    coupling_operator(sys::TransmonSystem, i, j) -> Matrix{ComplexF64}
+
+The exchange operator a_i†a_j + a_i a_j† that `coupling_hz[i, j]` multiplies.
+"""
+function coupling_operator(sys::TransmonSystem, i::Int, j::Int)
+    nl, nq = sys.n_levels, sys.n_qubits
+    a = zeros(ComplexF64, nl, nl)
+    for k in 1:nl-1; a[k, k+1] = sqrt(Float64(k)); end
+    ai, aj = _embed_site(a, i, nq, nl), _embed_site(a, j, nq, nl)
+    return ai' * aj + ai * aj'
+end

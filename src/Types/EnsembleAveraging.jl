@@ -199,6 +199,11 @@ function coupling_operator(sys::SpinSystem, i::Int, j::Int; kind::Symbol = :isot
     return sum(e(op, i) * e(op, j) for op in (spin_Sx, spin_Sy, spin_Sz))
 end
 
+# `op` (d×d) on site `i` of `n` identical d-level sites (site 1 = leftmost
+# kron factor, the ordering every QC platform builder uses).
+_embed_site(op::AbstractMatrix, i::Int, n::Int, d::Int) =
+    foldl(kron, (k == i ? Matrix{ComplexF64}(op) : Matrix{ComplexF64}(I, d, d) for k in 1:n))
+
 # ─── Input-state axis ─────────────────────────────────────────────────────────
 
 """

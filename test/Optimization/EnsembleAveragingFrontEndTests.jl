@@ -11,6 +11,9 @@
 #                                             normalised vec(A) → vec(B) pairs
 #   - SU2Kernel(ens, …), SpinIKernel(ens, …) = their offsets × amp_factors lists,
 #                                             and ensemble_averaging
+#   - QC platform offset_operator / coupling_operator = what each builder
+#     multiplies freq_hz / the coupling by; SpinQubit b1_factors = DriveScaleAxis;
+#     evaluate_qs_robustness = OffsetAxis over the quasi-static samples
 #   - grape_optimize(…; ensemble)           reports the ensemble fidelity it optimised
 # plus the refusals for ensembles a front end cannot represent.
 
@@ -218,6 +221,67 @@ using Random
         @test_throws ArgumentError mk(ens; rho_init = [spin_state(sys, :Iz)],
                                       rho_targ = [spin_state(sys, :mIz)])             # pairs twice
         @test_throws ArgumentError mk(EnsembleAveraging(OffsetAxis(offs; operator = Iz_)))   # no pairs
+    end
+
+    @testset "QC platforms: offset / coupling operators = the builders' parameters" begin
+        δ, ΔJ = 1.7e6, 0.3e6
+        f2 = [5.0e9, 5.2e9]; fc = 5.1e9
+        # transmon: Δω·n̂ and g(a_i†a_j + h.c.)
+        tm(f, g) = transmon_system(f, [-200e6, -210e6]; carrier_hz = fc,
+                                   coupling_hz = [0.0 g; g 0.0])
+        t0 = tm(f2, 5e6)
+        # transmon_system threw UndefVarError (`digits` shadowed) until 2026-10-19
+        @test t0.leakage_indices == [3, 6, 7, 8, 9]          # 3 levels × 2 qubits: any level ≥ 2
+        @test tm(f2 .+ δ, 5e6).H_drift - t0.H_drift ≈ 2π * δ .* offset_operator(t0)
+        @test tm(f2 .+ [δ, 0], 5e6).H_drift - t0.H_drift ≈ 2π * δ .* offset_operator(t0; qubits = [1])
+        @test tm(f2, 5e6 + ΔJ).H_drift - t0.H_drift ≈ 2π * ΔJ .* coupling_operator(t0, 1, 2)
+        # ions, atoms, spin qubits: Δω/2·σz — the MR Σ Iz
+        ion(f) = trapped_ion_system(f, zeros(2, 1), [1e6]; carrier_hz = fc)
+        @test ion(f2 .+ δ).H_drift - ion(f2).H_drift ≈ 2π * δ .* offset_operator(ion(f2))
+        at(f, V) = neutral_atom_system(f, [0.0 V; V 0.0]; carrier_hz = fc)
+        a0 = at(f2, 2e6)
+        @test at(f2 .+ δ, 2e6).H_drift - a0.H_drift ≈ 2π * δ .* offset_operator(a0)
+        @test at(f2, 2e6 + ΔJ).H_drift - a0.H_drift ≈ 2π * ΔJ .* coupling_operator(a0, 1, 2)
+        sq(f, J) = spin_qubit_system(f, [0.0 J; J 0.0]; carrier_hz = fc)
+        s0 = sq(f2, 1e6)
+        @test sq(f2 .+ δ, 1e6).H_drift - s0.H_drift ≈ 2π * δ .* offset_operator(s0)
+        @test sq(f2 .+ [0, δ], 1e6).H_drift - s0.H_drift ≈ 2π * δ .* offset_operator(s0; qubits = [2])
+        @test sq(f2, 1e6 + ΔJ).H_drift - s0.H_drift ≈ 2π * ΔJ .* coupling_operator(s0, 1, 2)
+        @test offset_operator(s0) ≈ offset_operator(spin_system([0.5, 0.5], zeros(2, 2), zeros(2)))
+        @test coupling_operator(s0, 1, 2) ≈ coupling_operator(spin_system([0.5, 0.5], zeros(2, 2), zeros(2)), 1, 2)
+        @test coupling_operator(s0, 1, 2; kind = :zz) ≈ kron(Iz, Iz)
+        # transmon vs the σz/2 platforms on the qubit subspace: n̂ = −σz/2 + 1/2
+        t1q = transmon_system([5e9], [-200e6]; n_levels = 2, carrier_hz = fc)
+        @test offset_operator(t1q) ≈ -Iz + I / 2
+        # NV: the carrier is subtracted from |−1⟩ only → |−1⟩⟨−1|
+        for kw in ((; subspace = :qubit), (; subspace = :full), (; hyperfine_hz = [2e6]))
+            nv(c) = nv_center_system(0.05; carrier_hz = c, kw...)
+            n0 = nv(2.0e9)
+            @test nv(2.0e9 - δ).H_drift - n0.H_drift ≈ 2π * δ .* offset_operator(n0)
+        end
+    end
+
+    @testset "existing QC robustness = axes" begin
+        rng = MersenneTwister(30)
+        sys = spin_qubit_system([10e9, 10.02e9], [0.0 2e6; 2e6 0.0]; carrier_hz = 10.01e9)
+        n_t = 20
+        ctrl = ControlSequence(2π * 5e6 .* randn(rng, n_t, sys.n_controls), 2e-9 * 50 / n_t, n_t)
+        tgt = unitary_target(kron(exp(-im * π / 2 * σx), I(2)); metric = :prop_squared)
+        # SpinQubit optimcon(b1_factors): its ensemble systems are a DriveScaleAxis
+        b1 = [0.9, 1.0, 1.1]
+        sys_b1 = [quantum_system(sys.H_drift, [s .* H for H in sys.H_controls]) for s in b1]
+        @test ensemble_averaging(EnsembleAveraging(DriveScaleAxis(b1)), sys, ctrl, tgt; gradient = false) ≈
+              sum(compute_fidelity(q, ctrl, tgt) for q in sys_b1) / 3 atol = 1e-13
+        # quasi-static detuning noise: evaluate_qs_robustness = OffsetAxis over its samples
+        K = offset_operator(sys)
+        noise = [QuasiStaticNoise(:freq, 2e6; n_samples = 5)]
+        H_fn(p) = sys.H_drift .+ 2π * p[1] .* K
+        mF, _, minF = evaluate_qs_robustness(H_fn, sys.H_controls, noise, tgt, ctrl)
+        samples = Pulsar._qs_samples(noise[1])
+        @test ensemble_averaging(EnsembleAveraging(OffsetAxis(samples; operator = K)), sys, ctrl, tgt;
+                                 gradient = false) ≈ mF atol = 1e-13
+        @test ensemble_averaging(EnsembleAveraging(OffsetAxis(samples; operator = K); aggregate = :worst_case),
+                                 sys, ctrl, tgt; gradient = false) ≈ minF atol = 1e-13
     end
 
     @testset "SU2Kernel / SpinIKernel (ens, …)" begin
