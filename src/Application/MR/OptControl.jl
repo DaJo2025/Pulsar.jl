@@ -726,8 +726,9 @@ Extends `MRControl` with Lindblad jump operators for T1/T2 relaxation.
 - `method`, `max_iter`, `fidelity`, `lbfgs_memory`, `verbose`, `print_interval`
 
 `fidelity` is a density-matrix-level metric here — `:dm_squared` (Φ^D_Q,
-default) or `:dm_real` (Φ^D_R) of the Hilbert–Schmidt overlap Tr(ρ_targ† ρ(T)) —
-because the propagated object is ρ, not a state vector.
+default), `:dm_real` (Φ^D_R) or `:dm_modulus` (Φ^D_M) of the Hilbert–Schmidt
+overlap Tr(ρ_targ† ρ(T)) — because the propagated object is ρ, not a state
+vector.
 
 ## Additional fields — relaxation
 
@@ -872,9 +873,7 @@ function LindbladMRControl(;
     length(jump_ops) == length(decay_rates) ||
         throw(ArgumentError("jump_ops and decay_rates must have the same length " *
                             "(got $(length(jump_ops)) and $(length(decay_rates)))"))
-    # Φ^D_M (DM-Modulus) has no Liouville-space adjoint here.
-    fidelity = canonical_metric(fidelity, (:dm_squared, :dm_real);
-                                context = "LindbladMRControl")
+    fidelity = canonical_metric(fidelity, DM_METRICS; context = "LindbladMRControl")
     l_bound < u_bound ||
         throw(ArgumentError("l_bound must be < u_bound"))
     backend ∈ (:cpu, :metal, :cuda) ||

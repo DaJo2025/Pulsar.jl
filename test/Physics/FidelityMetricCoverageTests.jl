@@ -139,7 +139,7 @@ using Test, LinearAlgebra
         @test LindbladMRControl(; mr..., fidelity = :square).fidelity === :dm_squared
         @test LindbladMRControl(; mr..., fidelity = :real).fidelity === :dm_real
         @test_throws ArgumentError LindbladMRControl(; mr..., fidelity = :state_squared)
-        @test_throws ArgumentError LindbladMRControl(; mr..., fidelity = :dm_modulus)
+        @test LindbladMRControl(; mr..., fidelity = :dm_modulus).fidelity === :dm_modulus
     end
 
     @testset "non-differentiable metric errors clearly on gradient (catch-all)" begin
