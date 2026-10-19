@@ -92,13 +92,22 @@ function precompute_spinI_params_ensemble(offsets_rad::AbstractVector{<:Real},
                                           RF_max_rad::Real,
                                           dt::Real,
                                           spin_I::Real)
-    N_off = length(offsets_rad)
-    N_amp = length(amp_factors)
-    flat_offsets = repeat(collect(Float64, offsets_rad); inner=N_amp)
-    flat_amps    = repeat(collect(Float64, amp_factors), N_off)
-    flat_RF      = RF_max_rad .* flat_amps
-    return precompute_spinI_params(flat_offsets ./ flat_amps, flat_RF, dt, spin_I)
-    # Note: offset is already in rad/s; amplitude factor scales RF_max
+    # Member (offset δ, factor a): H = δ·Iz + a·RF_max·Ix — the B1 factor scales
+    # the RF only (as in precompute_su2_params_ensemble). This used to pass a
+    # vector RF to precompute_spinI_params (MethodError: the amp_factors path
+    # never ran) and divided each offset by its factor.
+    dim    = Int(2 * spin_I + 1)
+    m_vals = _spin_m_values(spin_I)
+    Iz_mat = ComplexF64.(diagm(m_vals))
+    Ix_mat = spin_Sx(spin_I)
+    Dk = zeros(ComplexF64, length(offsets_rad) * length(amp_factors), dim, dim)
+    k  = 0
+    for δ in offsets_rad, a in amp_factors           # offset-major
+        k += 1
+        H_k = Float64(δ) .* Iz_mat .+ (RF_max_rad * Float64(a)) .* Ix_mat
+        Dk[k, :, :] .= compute_propagator(ComplexF64.(H_k), Float64(dt))
+    end
+    return Dk, m_vals
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
