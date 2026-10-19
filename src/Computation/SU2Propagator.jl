@@ -132,11 +132,14 @@ end
 # Fidelity + gradient (exact adjoint)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Metrics the SU(2) kernel implements (see `su2_fidelity_gradient`).
-const SU2_METRICS = (:prop_real, :state_squared)
+# Metrics the SU(2) kernel implements (see `su2_fidelity_gradient`): the
+# propagator row (z_P = Tr(U_t†U)/2 = Re z exactly in SU(2)) and the state row
+# of the |↑⟩ probe (z itself).
+const SU2_METRICS = (:prop_real, :prop_modulus, :prop_squared, :prop_average,
+                     :prop_real_quad, :state_real, :state_modulus, :state_squared)
 
 _su2_metric(metric::Symbol) =
-    (metric === :prop_real || metric === :state_squared) ? metric :
+    metric in SU2_METRICS ? metric :
         canonical_metric(metric, SU2_METRICS; context = "the SU(2) kernel")
 
 """
@@ -146,17 +149,21 @@ _su2_metric(metric::Symbol) =
 Compute the ensemble-averaged SU(2) fidelity and its exact gradient with respect
 to the phase vector `phi`, using the co-state (adjoint) method.
 
-**Fidelity metrics** (`z_k = AT* Ak(T) + BT* Bk(T) = ⟨↑|U_targ† U_k|↑⟩`):
-- `:prop_real` (Φ^P_R, default): `F = mean_k Re z_k`.
-  Equal to `Re Tr(U_targ† U) / dim` for a spin-1/2 universal-rotation target.
-- `:state_squared` (Φ^S_Q): `F = mean_k |z_k|²` — the state fidelity of the
-  |↑⟩ probe, |⟨U_targ ↑|U_k ↑⟩|².  Not Φ^P_Q, which would be `(Re z_k)²`.
+**Fidelity metrics** (`z_k = AT* Ak(T) + BT* Bk(T) = ⟨↑|U_targ† U_k|↑⟩`). In
+SU(2) the propagator overlap is exactly `Tr(U_targ† U_k)/2 = Re z_k`, so:
+- propagator row on `Re z_k`: `:prop_real` (Φ^P_R, default), `:prop_modulus`
+  (Φ^P_M), `:prop_squared` (Φ^P_Q = (Re z_k)²), `:prop_average`
+  ((2Φ^P_Q + 1)/3), `:prop_real_quad` (1 − (1 − Φ^P_R)², the Kobzar form);
+- state row of the |↑⟩ probe on `z_k`: `:state_real` (= Φ^P_R here),
+  `:state_modulus`, `:state_squared` (|⟨U_targ ↑|U_k ↑⟩|², not Φ^P_Q).
+`F` is the ensemble mean; every metric goes through `overlap_fidelity` /
+`overlap_weight`, so the adjoint is exact for all of them.
 
 The pre-Φ^X_Y names `:real_trace` and `:squared` are accepted with a
 deprecation warning.
 
 **Returns:**
-- `F`  : fidelity in [−1, 1] (for `:prop_real`) or [0, 1] (for `:state_squared`)
+- `F`  : fidelity — in [−1, 1] for the real metrics, [0, 1] otherwise
 - `GJ` : gradient of `J = 1 − F` w.r.t. `phi`; length `N_TS`.
   Pass as `grad!` argument to L-BFGS-B (it is already the gradient of the cost
   to minimise, not the negated fidelity gradient).
@@ -208,20 +215,26 @@ end
 # ─── metric-specific terminal fidelity and initial co-state ──────────────────
 
 function _su2_terminal(Af, Bf, AT, BT, N_ens_f, metric::Symbol)
-    if metric === :prop_real
+    if has_constant_weight(metric)          # :prop_real, :state_real (w ≡ 1)
         overlaps = @. real(conj(AT) * Af + conj(BT) * Bf)
         F  = sum(overlaps) / N_ens_f
         pA = fill(-conj(AT) / N_ens_f, length(Af))
         pB = fill(-conj(BT) / N_ens_f, length(Bf))
-    elseif metric === :state_squared
-        z  = @. conj(AT) * Af + conj(BT) * Bf
-        sq = @. abs2(z)
-        F  = sum(sq) / N_ens_f
-        # dJ/d(A_f*) = −(1/N)(d/dA_f*)|z|² = −(1/N) z_k * conj(AT)
-        pA = @. -(z * conj(AT)) / N_ens_f
-        pB = @. -(z * conj(BT)) / N_ens_f
     else
-        error("Unknown SU(2) fidelity metric: $metric.  Choose :prop_real or :state_squared.")
+        # Any other metric (:state_squared included — its co-state used to read
+        # −z·conj(AT)/N, conjugating z the wrong way and dropping the factor 2,
+        # so its gradient disagreed with finite differences at O(1); the weight
+        # 2·conj(z) from overlap_weight is the fix):
+        # dF = Re(w · dz_m) with w = overlap_weight(metric, z_m).
+        # On the propagator row z_m = Re z, dz_m = Re(dz) and w is real, so
+        # Re(w · Re(dz)) = Re(w · dz) and the same co-state p = −(w/N)·conj(T)
+        # serves both rows.
+        z  = @. conj(AT) * Af + conj(BT) * Bf
+        _metric_level(metric) === :prop && (z = complex.(real.(z)))
+        F  = sum(overlap_fidelity.(metric, z; dim = 2)) / N_ens_f
+        cz = overlap_weight.(metric, z; dim = 2) ./ N_ens_f
+        pA = @. -cz * conj(AT)
+        pB = @. -cz * conj(BT)
     end
     return F, pA, pB
 end
@@ -276,9 +289,13 @@ function su2_fidelity_forward(phi::AbstractVector{Float64},
     Af = @view A[:, N_TS + 1]
     Bf = @view B[:, N_TS + 1]
     N_ens_f = Float64(N_ens)
-    if metric === :prop_real
+    if has_constant_weight(metric)          # :prop_real, :state_real
         return sum(@. real(conj(AT) * Af + conj(BT) * Bf)) / N_ens_f
-    else  # :state_squared
+    elseif metric === :state_squared
         return sum(@. abs2(conj(AT) * Af + conj(BT) * Bf)) / N_ens_f
+    else
+        z = @. conj(AT) * Af + conj(BT) * Bf
+        _metric_level(metric) === :prop && (z = complex.(real.(z)))
+        return sum(overlap_fidelity.(metric, z; dim = 2)) / N_ens_f
     end
 end

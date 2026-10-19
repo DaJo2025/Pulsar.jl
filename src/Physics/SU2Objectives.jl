@@ -30,8 +30,10 @@ Holds the precomputed scalar ensemble parameters and the SU(2) target.
 - `betas`  : precomputed time-independent SU(2) scalar factors, length `N_ens`
 - `AT`     : target SU(2) A component, |AT|² + |BT|² = 1
 - `BT`     : target SU(2) B component
-- `metric` : `:prop_real` (Φ^P_R) or `:state_squared` (Φ^S_Q of the |↑⟩ probe);
-             see `su2_fidelity_gradient`
+- `metric` : any of `SU2_METRICS` — the propagator row (`:prop_real` default,
+             `:prop_modulus`, `:prop_squared`, `:prop_average`, `:prop_real_quad`)
+             or the |↑⟩-probe state row (`:state_real`, `:state_modulus`,
+             `:state_squared`); see `su2_fidelity_gradient`
 - `N_ens`  : ensemble size (N_off, or N_off × N_amp for robustness)
 
 ## Callable interface
@@ -51,7 +53,7 @@ SU2Kernel(offsets_hz, RF_max_hz, dt, rotation_angle, Theta, Phi_ax;
 - `Phi_ax`         : azimuthal angle of rotation axis (radians)
 - `amp_factors`    : optional Vector of B1 scale factors for robustness
                      (e.g. `[0.9,1.0,1.1]`); if `nothing`, pure offset ensemble
-- `metric`         : `:prop_real` (default) or `:state_squared`
+- `metric`         : any of `SU2_METRICS` (default `:prop_real`)
 """
 struct SU2Kernel
     alpha  :: Vector{ComplexF64}
