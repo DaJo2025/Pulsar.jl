@@ -235,7 +235,7 @@ using Random
         @test tm(f2 .+ δ, 5e6).H_drift - t0.H_drift ≈ 2π * δ .* offset_operator(t0)
         @test tm(f2 .+ [δ, 0], 5e6).H_drift - t0.H_drift ≈ 2π * δ .* offset_operator(t0; qubits = [1])
         @test tm(f2, 5e6 + ΔJ).H_drift - t0.H_drift ≈ 2π * ΔJ .* coupling_operator(t0, 1, 2)
-        # ions, atoms, spin qubits: Δω/2·σz — the MR Σ Iz
+        # ions, spin qubits: Δω/2·σz — the MR Σ Iz; atoms: Δω·|r⟩⟨r| and V·|rr⟩⟨rr|
         ion(f) = trapped_ion_system(f, zeros(2, 1), [1e6]; carrier_hz = fc)
         @test ion(f2 .+ δ).H_drift - ion(f2).H_drift ≈ 2π * δ .* offset_operator(ion(f2))
         at(f, V) = neutral_atom_system(f, [0.0 V; V 0.0]; carrier_hz = fc)

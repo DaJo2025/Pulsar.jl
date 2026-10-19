@@ -16,7 +16,9 @@ using LinearAlgebra
 
 Physical model for an array of neutral atoms driven to Rydberg states.
 
-Each atom is a two-level system (|g⟩ and |r⟩).  When `blockade_regime=true`
+Each atom is a two-level system, |g⟩ = |0⟩ (ground) and |r⟩ = |1⟩ (Rydberg,
+the upper level) — used consistently by the detuning, the blockade and the
+decay.  When `blockade_regime=true`
 the Rydberg blockade interaction `V |rr⟩⟨rr|` is added to the drift Hamiltonian
 for every pair of atoms, preventing simultaneous excitation.
 
@@ -56,9 +58,18 @@ Construct a [`NeutralAtomSystem`](@ref).
 
 The rotating-frame drift Hamiltonian is:
 
-    H = Σ_i Δω_i/2 σz_i  +  blockade_regime ? Σ_{i<j} V_{ij} |rr⟩⟨rr|_{ij} : 0
+    H = Σ_i Δω_i |r⟩⟨r|_i  +  blockade_regime ? Σ_{i<j} V_{ij} |rr⟩⟨rr|_{ij} : 0
 
-where `Δω_i = ω_i − ω_c` and `|r⟩` corresponds to the excited (Rydberg) state.
+where `Δω_i = ω_i − ω_c` (atom minus carrier, = −δ_laser) and |r⟩ = |1⟩ is the
+Rydberg state: an atom above the carrier raises |r⟩, so the facilitation
+(anti-blockade) resonance 2Δω + V = 0 sits at Δω = −V/2. `T1_s` decays
+|r⟩ → |g⟩ (jump operator |g⟩⟨r|).
+
+Convention changed 2026-10-19: the detuning was `Δω_i/2 σz_i` and the decay
+|r⟩⟨g|, which treated |0⟩ as the upper level while the blockade used |1⟩ —
+reversing the detuning relative to V and pumping *into* |r⟩. Old = new
+Hamiltonian with Δω → −Δω, up to a global phase; runs with zero detuning
+(e.g. one atom at the default carrier) and no `T1_s` are unchanged.
 
 Control operators (per atom):
     H_x_i = σx_i / 2
@@ -100,10 +111,9 @@ function neutral_atom_system(freq_hz         :: Vector{Float64},
 
     σx = ComplexF64[0 1; 1 0]
     σy = ComplexF64[0 -im; im 0]
-    σz = ComplexF64[1 0; 0 -1]
-    σm = ComplexF64[0 0; 1 0]
-    # |r⟩⟨r| projector (excited state = |1⟩ in {|g⟩,|r⟩} basis)
-    P_r = ComplexF64[0 0; 0 1]
+    # Basis {|g⟩ = |0⟩, |r⟩ = |1⟩}; |r⟩ is the upper level everywhere below.
+    P_r  = ComplexF64[0 0; 0 1]     # |r⟩⟨r|
+    σ_gr = ComplexF64[0 1; 0 0]     # |g⟩⟨r| — spontaneous decay |r⟩ → |g⟩
 
     function embed2(op, i, n)
         mats = [k == i ? op : Matrix{ComplexF64}(I, 2, 2) for k in 1:n]
@@ -114,7 +124,7 @@ function neutral_atom_system(freq_hz         :: Vector{Float64},
     H_drift = zeros(ComplexF64, dim, dim)
     for i in 1:n
         Δω = 2π * freq_hz[i] - ω_c
-        H_drift .+= (Δω / 2.0) .* embed2(σz, i, n)
+        H_drift .+= Δω .* embed2(P_r, i, n)
     end
 
     if blockade_regime
@@ -156,7 +166,7 @@ function neutral_atom_system(freq_hz         :: Vector{Float64},
     collapse_ops = Matrix{ComplexF64}[]
     if isfinite(T1_s) && T1_s > 0.0
         for i in 1:n
-            push!(collapse_ops, sqrt(1.0 / T1_s) .* embed2(σm, i, n))
+            push!(collapse_ops, sqrt(1.0 / T1_s) .* embed2(σ_gr, i, n))
         end
     end
     length(extra_jump_ops) == length(extra_decay_rates) ||
@@ -180,12 +190,13 @@ end
 """
     offset_operator(sys::NeutralAtomSystem; qubits = :all) -> Matrix{ComplexF64}
 
-Σ σz_i/2 over `qubits` — what a frequency shift δ (Hz, at a fixed carrier) adds
-in `neutral_atom_system` (see `offset_operator(::TrappedIonSystem)`).
+Σ |r⟩⟨r|_i over `qubits` — what a frequency shift δ (Hz, at a fixed carrier) adds
+in `neutral_atom_system`; a laser detuning δ_L is an offset of −δ_L. The number
+form, as for the transmon (= −σz/2 + ½ per atom).
 """
 function offset_operator(sys::NeutralAtomSystem; qubits = :all)
     idx = qubits === :all ? (1:sys.n_atoms) : qubits
-    return sum(_embed_site(ComplexF64[0.5 0; 0 -0.5], i, sys.n_atoms, 2) for i in idx)
+    return sum(_embed_site(ComplexF64[0 0; 0 1], i, sys.n_atoms, 2) for i in idx)
 end
 
 """

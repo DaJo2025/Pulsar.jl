@@ -84,6 +84,9 @@ end
     section("Application – LindbladQCControl Integration (Theme 6b)")
     include("Application/QuantumComputing/LindbladQCControlIntegrationTests.jl")
 
+    section("Application – Neutral-Atom Convention (|r⟩ = |1⟩)")
+    include("Application/QuantumComputing/NeutralAtomConventionTests.jl")
+
     section("Application – LindbladMRControl Algorithm Sweep (Theme 6b)")
     include("Application/MR/LindbladMRAlgorithmSweepTests.jl")
 
