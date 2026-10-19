@@ -88,11 +88,12 @@ Paper symbol and plain name of a fidelity metric, e.g.
 metric_label(metric::Symbol)::String = get(_METRIC_LABELS, metric, ":$metric")
 
 # :prop / :state / :dm, or `nothing` for anything off the grid (e.g. :auto).
+# Symbol comparisons only: kernels call this per ensemble member.
 function _metric_level(metric::Symbol)
-    s = String(metric)
-    startswith(s, "prop_")  && return :prop
-    startswith(s, "state_") && return :state
-    startswith(s, "dm_")    && return :dm
+    (metric in PROP_METRICS || metric === :prop_average || metric === :prop_real_quad) &&
+        return :prop
+    metric in STATE_METRICS && return :state
+    (metric in DM_METRICS || metric === :dm_uhlmann) && return :dm
     return nothing
 end
 

@@ -123,6 +123,9 @@ include("Backend/Parallelism/CPUParallelization.jl")
 # ---------------------------------------------------------------------------
 # Layer 1b: Numerical computation primitives
 # ---------------------------------------------------------------------------
+# Fidelity-metric arithmetic shared by every kernel (needs only the metric
+# names from Types/Targets.jl, so kernels in this layer can use it too).
+include("Computation/FidelityReductions.jl")
 include("Computation/Propagators.jl")
 include("Computation/PropagatorRegistry.jl")
 include("Computation/PropagatorCache.jl")
@@ -460,6 +463,7 @@ export STATE_FIDELITY_TYPES, GATE_FIDELITY_TYPES
 # Fidelity metric names — the Φ^X_Y grid (level P/S/D × reduction R/M/Q)
 export FIDELITY_METRICS, PROP_METRICS, STATE_METRICS, DM_METRICS
 export canonical_metric, metric_label
+export overlap_fidelity, overlap_weight
 # Fidelity metric type hierarchy (type-stable dispatch).  The pre-Φ^X_Y names
 # (RealOverlap, NormalizedGate, REAL_OVERLAP, …) are exported as deprecated
 # bindings from Physics/Objectives.jl.
