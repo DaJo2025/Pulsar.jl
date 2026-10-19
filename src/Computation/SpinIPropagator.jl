@@ -8,7 +8,7 @@
 #   where D_k = exp(-i [δ_k Iz + Ω_RF Ix] dt) is precomputed once per ensemble member,
 #   so the RF field is Ω_RF·(Ix cos φ + Iy sin φ) — the usual NMR phase convention,
 #   the same as the SU(2) and Trotter kernels. (Until 2026-10-19 this kernel used
-#   exp(+iφIz)·D·exp(−iφIz), i.e. the opposite phase sign: a pulse optimised
+#   exp(+iφIz)·D·exp(−iφIz), i.e. the opposite phase sign: a pulse optimized
 #   before then reproduces with φ → −φ.)
 #
 #   Matrix-vector action per step:

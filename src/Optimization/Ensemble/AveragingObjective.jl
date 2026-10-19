@@ -2,8 +2,8 @@
 # Optimization/Ensemble/AveragingObjective.jl
 # ============================================================================
 # An EnsembleAveraging (Types/EnsembleAveraging.jl) as an EnsembleObjective, so
-# every optimiser that takes one — through ensemble_wrap / ensemble_wrap_fonly —
-# can optimise it. The ensemble aggregates internally (any of its aggregators),
+# every optimizer that takes one — through ensemble_wrap / ensemble_wrap_fonly —
+# can optimize it. The ensemble aggregates internally (any of its aggregators),
 # so it is wired in as the batched fast path.
 # ============================================================================
 
@@ -18,7 +18,7 @@ amplitudes (the layout of `build_ensemble_from_systems`), starting point
 
 ```julia
 obj      = ensemble_objective(ens, sys, ctrl, target)
-f, grad! = ensemble_wrap(obj)                 # minimiser convention (−F)
+f, grad! = ensemble_wrap(obj)                 # minimizer convention (−F)
 θ, _     = lbfgs_optimize(f, grad!, vec(ctrl.controls))
 ```
 

@@ -300,7 +300,7 @@ end
 # list (each drift gets every added term), drive scales the power levels,
 # StateProbes become the state pairs. LindbladMRControl (`liouville = true`)
 # also takes OperatorProbes, as vec(A/‖A‖) → vec(B/‖B‖): its kernel scores the
-# unnormalised Tr(σ_targ† σ), and normalising here makes that the probe overlap
+# unnormalized Tr(σ_targ† σ), and normalizing here makes that the probe overlap
 # Tr(B†UAU†)/(‖A‖‖B‖) that ensemble_averaging scores.
 function _mr_expand_ensemble(ens::EnsembleAveraging, drifts, pwr_levels, rho_init, rho_targ,
                              fidelity; context::AbstractString = "MRControl",

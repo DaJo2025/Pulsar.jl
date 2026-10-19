@@ -465,7 +465,7 @@ println("Fidelity: ", result.fidelity)
 - The gradient is the analytical GRAPE gradient from `compute_grape_gradient`.
 - Callback signature: `callback(iter::Int, F::Float64, gnorm::Float64,
   controls::Matrix{Float64}) -> nothing`.
-- `ensemble = ens` (an [`EnsembleAveraging`](@ref)) optimises the ensemble
+- `ensemble = ens` (an [`EnsembleAveraging`](@ref)) optimizes the ensemble
   average `ensemble_averaging(ens, system, controls, target)` instead of the
   single-system fidelity — offsets, couplings, B1, drive phase, timing, any
   added term, under any of its aggregators. When the ensemble's probe pairs are

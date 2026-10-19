@@ -166,7 +166,7 @@ using Random
         @test relerr(G, Gfd) < 2e-3          # first-order GRAPE, dt·‖H‖ ≈ 0.03
     end
 
-    # ── MAS / EPR powder gradient helper: honours the target metric ──────────
+    # ── MAS / EPR powder gradient helper: honors the target metric ──────────
     @testset "powder gradient helper, $(t.type) :$m" for (t, m) in vcat(
             # An SU(2) target: for σx (det −1) Tr(σx†U) is purely imaginary for
             # every SU(2) propagator, so Φ^P_R ≡ 0 and its gradient is 0.

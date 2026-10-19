@@ -1,20 +1,20 @@
 # test/Optimization/EnsembleAveragingFrontEndTests.jl
 # ===========================================
 # Front ends of the ensemble averager. Each is pinned against the mechanism it
-# generalises, on the same pulse:
+# generalizes, on the same pulse:
 #   - band_selective_fidelity / _gradient  = OffsetAxis with signed weights, :sum
 #   - build_ensemble_from_systems           = DriftListAxis through ensemble_objective
 #   - MRControl(…; ensemble)                = MRControl with the drifts / pwr_levels /
 #                                             state pairs written out, and
 #                                             ensemble_averaging on a QuantumSystem
 #   - LindbladMRControl(…; ensemble)        = the same, with operator probes as
-#                                             normalised vec(A) → vec(B) pairs
+#                                             normalized vec(A) → vec(B) pairs
 #   - SU2Kernel(ens, …), SpinIKernel(ens, …) = their offsets × amp_factors lists,
 #                                             and ensemble_averaging
 #   - QC platform offset_operator / coupling_operator = what each builder
 #     multiplies freq_hz / the coupling by; SpinQubit b1_factors = DriveScaleAxis;
 #     evaluate_qs_robustness = OffsetAxis over the quasi-static samples
-#   - grape_optimize(…; ensemble)           reports the ensemble fidelity it optimised
+#   - grape_optimize(…; ensemble)           reports the ensemble fidelity it optimized
 # plus the refusals for ensembles a front end cannot represent.
 
 using Test

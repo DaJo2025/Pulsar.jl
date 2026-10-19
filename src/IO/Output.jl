@@ -409,7 +409,7 @@ Result of the Pasqal Pulser exporter.
 
 # Fields
 - `times_us::Vector{Float64}`       — step start times in microseconds
-- `amp_norm::Vector{Float64}`       — amplitude per step, normalised to its peak
+- `amp_norm::Vector{Float64}`       — amplitude per step, normalized to its peak
 - `phase_rad::Vector{Float64}`      — phase per step in radians (unwrapped)
 - `omega_max_rad_per_us::Float64`   — peak Rabi frequency Ω (rad/µs)
 - `dt_ns::Int`                      — step length in ns
@@ -815,7 +815,7 @@ end
 # detuning Δω·|r⟩⟨r| is δ = −Δω — so the sample phase exports unchanged.
 #
 # A pulse with a time-varying phase is Pulse.ArbitraryPhase (a plain Pulse takes
-# one constant phase); Pulser realises it as a detuning δ = −dφ/dt. The waveforms
+# one constant phase); Pulser realizes it as a detuning δ = −dφ/dt. The waveforms
 # are CustomWaveform, one sample per ns, so a piecewise-constant pulse is exact
 # when dt is a whole number of ns. The phase is unwrapped and held through
 # zero-amplitude steps, so no step becomes a spurious 2π or "phase of zero"
@@ -860,7 +860,7 @@ function _export_pulser(ctx::ExportContext)
     write(io, "# OMEGA_MAX * amp_$(name)[k] (rad/µs) and phase phase_$(name)[k] (rad).\n")
     write(io, "# Pulser convention, = Pulsar NeutralAtomSystem with |r> = |1>:\n")
     write(io, "#   H = Omega/2 (e^{i phi}|r><g| + h.c.) - delta |r><r|\n")
-    write(io, "# Pulse.ArbitraryPhase realises the time-varying phase as a detuning\n")
+    write(io, "# Pulse.ArbitraryPhase realizes the time-varying phase as a detuning\n")
     write(io, "# delta = -dphi/dt: each phase step is a 1-ns detuning spike, which a\n")
     write(io, "# device's detuning limits may reject (Sequence.add raises if so).\n")
     write(io, "# The atoms' own detuning (freq_hz - carrier in Pulsar) is not part of\n")
@@ -877,7 +877,7 @@ function _export_pulser(ctx::ExportContext)
     write(io, "])\n\n")
     write(io, "DT_NS = $(dt_ns)\n")
     write(io, "OMEGA_MAX = $(@sprintf("%.10g", omega_max))  # rad/µs, peak Rabi frequency\n\n")
-    write(io, "# Amplitude per step, normalised to OMEGA_MAX\n")
+    write(io, "# Amplitude per step, normalized to OMEGA_MAX\n")
     write(io, "amp_$(name) = np.array([")
     join(io, (@sprintf("%.10f", a) for a in amp_n), ", ")
     write(io, "])\n\n")
@@ -1243,7 +1243,7 @@ Load a Pasqal Pulser script (`_pulser.py`). Extracts `times_us`, `amp`, and
 `dt` is inferred from `times_us` spacing when possible. The amplitudes are
 scaled by `max_amp`; when it is not given, a script's `OMEGA_MAX` (rad/µs) is
 used and the samples come back in rad/s — the inverse of `export_pulse`
-(otherwise 1.0, i.e. normalised).
+(otherwise 1.0, i.e. normalized).
 """
 function load_pulser(
     filepath :: String;

@@ -290,7 +290,7 @@ with `ensemble_averaging(ens, system, controls, target)`.
 
 Front ends: `grape_optimize(system, target, controls; ensemble)` (or
 `grape_optimize(system, ens, controls)` when the probes are the targets),
-`ensemble_objective` for any optimiser, and — for the uniform means their
+`ensemble_objective` for any optimizer, and — for the uniform means their
 kernels compute — `MRControl(…; ensemble)`, `SU2Kernel(ens, …)`,
 `SpinIKernel(ens, …)`.
 """
@@ -363,7 +363,7 @@ end
 _uniform_weights(w) = all(x -> isapprox(x, w[1]; rtol = 1e-12), w)
 
 function _require_uniform_mean(ens::EnsembleAveraging, allowed::Tuple, context::AbstractString)
-    hint = ". Evaluate other ensembles with ensemble_averaging, or optimise them with " *
+    hint = ". Evaluate other ensembles with ensemble_averaging, or optimize them with " *
            "grape_optimize(system, target, controls; ensemble) / ensemble_objective."
     ens.aggregate === :mean || throw(ArgumentError(
         "$context averages uniformly: aggregate must be :mean (got :$(ens.aggregate))$hint"))
