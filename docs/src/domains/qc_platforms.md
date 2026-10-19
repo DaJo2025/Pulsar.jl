@@ -45,6 +45,14 @@ ion = trapped_ion_system(
 
 ### Neutral atom
 
+Basis `|g⟩ = |0⟩`, `|r⟩ = |1⟩` (the Rydberg state is the upper level) in every
+term: `H = Σ_i Δω_i |r⟩⟨r|_i + Σ_{i<j} V_ij |rr⟩⟨rr|_ij` with
+`Δω_i = 2π(freq_hz[i] − carrier_hz)`, and `T1_s` decays `|r⟩ → |g⟩`. This is
+Pulser's convention (`δ = −Δω`), so the `:pulser` exporter writes the phase
+unchanged. Earlier versions used `Δω_i/2 σz_i` and a `|r⟩⟨g|` decay — the
+detuning reversed relative to `V` and the decay pumping into `|r⟩`; runs with
+a nonzero detuning or finite `T1_s` differ.
+
 ```julia
 V = zeros(4, 4); V[1, 2] = V[2, 1] = 30e6      # Rydberg interaction (Hz)
 ryd = neutral_atom_system(

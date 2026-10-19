@@ -27,13 +27,13 @@ Off the grid:
 
 | Symbol            | Formula                              | Notes                                   |
 |-------------------|--------------------------------------|-----------------------------------------|
-| `:prop_average`   | `(d · Φ^P_Q + 1)/(d + 1)`            | Haar-average gate fidelity (Φ^P_avg)    |
+| `:state_squared_haar` | `(d · Φ^P_Q + 1)/(d + 1)`        | State-Squared averaged over Haar-random inputs = the average gate fidelity ⟨Φ^S_Q⟩_Haar; computed from the propagator overlap |
 | `:dm_uhlmann`     | `(Tr √(√ρ σ √ρ))²`                   | Uhlmann–Jozsa; forward metric only      |
 | `:prop_real_quad` | `1 − (1 − Φ^P_R)²`                   | Kobzar quadratic form; `grape_gate_kernel` only |
 
 Each symbol has a matching type and exported singleton: `:state_squared` ↔
 `StateSquared` ↔ `STATE_SQUARED`, `:prop_real` ↔ `PropReal` ↔ `PROP_REAL`, and
-so on (`PropAverage`, `DMUhlmann` for the off-grid ones). The tuples
+so on (`StateSquaredHaar`, `DMUhlmann` for the off-grid ones). The tuples
 `PROP_METRICS`, `STATE_METRICS`, `DM_METRICS` and `FIDELITY_METRICS` list the
 symbols, and `metric_label(:dm_squared)` returns `"Φ^D_Q (DM-Squared)"`.
 
@@ -45,13 +45,14 @@ throws instead of being silently reinterpreted.
 
 | Entry point                                   | Accepted metrics                                  | Default          |
 |-----------------------------------------------|---------------------------------------------------|------------------|
-| `unitary_target(U; metric)`, `gate_fidelity`  | `:prop_real`, `:prop_modulus`, `:prop_squared`, `:prop_average` | `:prop_squared` |
+| `unitary_target(U; metric)`, `gate_fidelity`  | `:prop_real`, `:prop_modulus`, `:prop_squared`, `:state_squared_haar` | `:prop_squared` |
 | `state_target(ψ; metric)`                     | `:state_*`, and `:dm_*` evaluated on the pure states | `:state_squared` |
 | `state_fidelity(ψ_t, ψ; type)`                | `:state_*`, `:dm_*`, `:dm_uhlmann`                | `:state_real`    |
 | `MRControl(; fidelity)`                       | `:state_real`, `:state_modulus`, `:state_squared` | `:state_real`    |
-| `LindbladMRControl(; fidelity)`               | `:dm_real`, `:dm_squared`                         | `:dm_squared`    |
-| `SU2Kernel(...; metric)`                      | `:prop_real`, `:state_squared` (\|↑⟩ probe)       | `:prop_real`     |
-| `SpinIKernel(...; metric)`                    | `:state_squared`, `:prop_real`                    | `:state_squared` |
+| `LindbladMRControl(; fidelity)`               | `:dm_real`, `:dm_modulus`, `:dm_squared`          | `:dm_squared`    |
+| `SU2Kernel(...; metric)`                      | propagator row (`:prop_real`, `:prop_modulus`, `:prop_squared`, `:state_squared_haar`, `:prop_real_quad`) and the \|↑⟩-probe state row (`:state_real`, `:state_modulus`, `:state_squared`) | `:prop_real` |
+| `SpinIKernel(...; metric)`                    | state row and propagator row, as SU(2)            | `:state_squared` |
+| `TrotterKernel(...; metric)`                  | `:state_real`, `:state_modulus`, `:state_squared` | `:state_squared` |
 | `grape_gate_kernel(...; metric)`              | `:prop_real`, `:prop_real_quad`, `:prop_squared`, `:prop_modulus` | `:prop_real` |
 
 The SU(2) kernel's `:state_squared` is `|⟨↑|U_t† U|↑⟩|²`, the state fidelity
@@ -69,14 +70,14 @@ point translates them at its own level, with a one-time deprecation warning.
 | Old name                           | New name                                      |
 |------------------------------------|-----------------------------------------------|
 | `:normalized`                      | `:prop_squared`                               |
-| `:average`                         | `:prop_average`                               |
+| `:average`, `:prop_average`        | `:state_squared_haar`                         |
 | `:real`, `:modulus`, `:square`     | `:prop_*`, `:state_*` or `:dm_*`, by entry point |
 | `:real_trace` (SU2/Spin-I kernels) | `:prop_real`                                  |
 | `:squared` (SU2 kernel)            | `:state_squared`                              |
 | `:state` (Spin-I/Trotter kernels)  | `:state_squared`                              |
 | `:dm_linear`, `:dm_square`         | `:dm_real`, `:dm_squared`                     |
 | `RealOverlap`, `SquaredOverlap`, `ModulusOverlap` | `StateReal`, `StateSquared`, `StateModulus` |
-| `RealGate`, `NormalizedGate`, `ModulusGate`, `AverageGate` | `PropReal`, `PropSquared`, `PropModulus`, `PropAverage` |
+| `RealGate`, `NormalizedGate`, `ModulusGate`, `AverageGate` / `PropAverage` | `PropReal`, `PropSquared`, `PropModulus`, `StateSquaredHaar` |
 | `LinearDMFidelity`, `SquaredDMFidelity`, `ModulusDMFidelity`, `UhlmannFidelity` | `DMReal`, `DMSquared`, `DMModulus`, `DMUhlmann` |
 
 The singletons follow the types (`REAL_OVERLAP` → `STATE_REAL`,
@@ -84,13 +85,24 @@ The singletons follow the types (`REAL_OVERLAP` → `STATE_REAL`,
 `canonical_metric(sym, supported; context)` performs the translation if you
 need it in your own code.
 
+### One implementation
+
+Every kernel reduces its own complex overlap `z` with the same two functions,
+`overlap_fidelity(metric, z; dim)` and `overlap_weight(metric, z; dim)`. The
+weight `w` is defined by `dF = Re(w · dz)` — `1` for the real reductions,
+`2z̄` for squared, `z̄/|z|` for modulus — so a kernel turns the derivative of
+its overlap into a fidelity gradient as `Re(w · ∂z/∂u)`, and every kernel ×
+metric combination is checked against finite differences in the test suite.
+DM-Real is the raw `Re Tr(ρ_t† ρ)`: with traceless operators (operator
+transfer) it is legitimately negative, and a perfect inversion scores −1.
+
 ## Using a metric
 
 ```julia
 F = state_fidelity(ψ_target, ψ_final, STATE_SQUARED)          # typed
 F = state_fidelity(ψ_target, ψ_final; type = :state_squared)  # by symbol
 F = gate_fidelity(U, U_target, PROP_SQUARED)
-F = gate_fidelity(U, U_target; type = :prop_average)
+F = gate_fidelity(U, U_target; type = :state_squared_haar)
 F = state_fidelity(ρ, σ, DM_UHLMANN)
 F = dm_fidelity(ρ, σ)                                          # alias for Uhlmann
 

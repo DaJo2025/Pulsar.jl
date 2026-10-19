@@ -155,6 +155,14 @@ propagators that avoid the full matrix-exponential O(dim³) cost:
   where the default `compute_propagator` (LAPACK Hermitian eigendecomposition)
   is not the best fit; the order is configurable.
 
+**RF-phase convention.** All three phase-only kernels use the NMR convention:
+a step with phase φ is `e^{−iφIz} · D · e^{+iφIz}`, i.e. the field
+`Ω (Ix cos φ + Iy sin φ)`. (The spin-I kernel used the opposite sign before;
+a spin-I pulse optimized with an older version reproduces with φ → −φ.)
+`SU2Kernel` and `SpinIKernel` also accept an `EnsembleAveraging` of offsets ×
+B1 factors in place of their offset / `amp_factors` lists — see
+[Ensemble averaging](../advanced/ensemble_averaging.md).
+
 Matching fidelity metrics live in `src/Physics/SU2Objectives.jl` and
 `src/Physics/SpinIObjectives.jl`. For sweeping the pulse duration of an
 SU(2) problem to locate the shortest pulse meeting a target fidelity, use

@@ -56,6 +56,7 @@ makedocs(;
             "UQ & sensitivity"          => "advanced/uq_sensitivity.md",
             "Pulse export"              => "advanced/io_export.md",
             "Checkpointing"             => "advanced/checkpointing.md",
+            "Ensemble averaging"        => "advanced/ensemble_averaging.md",
         ],
         "Comparisons" => [
             "Overview"                  => "comparisons/overview.md",
