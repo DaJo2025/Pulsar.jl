@@ -4,11 +4,15 @@
 #
 # Physics:
 #   For phase-only control with constant Rabi, the per-step propagator factors as
-#     U_k(φ_n) = exp(+i φ_n Iz) · D_k · exp(-i φ_n Iz)
-#   where D_k = exp(-i [δ_k Iz + Ω_RF Ix] dt) is precomputed once per ensemble member.
+#     U_k(φ_n) = exp(-i φ_n Iz) · D_k · exp(+i φ_n Iz)
+#   where D_k = exp(-i [δ_k Iz + Ω_RF Ix] dt) is precomputed once per ensemble member,
+#   so the RF field is Ω_RF·(Ix cos φ + Iy sin φ) — the usual NMR phase convention,
+#   the same as the SU(2) and Trotter kernels. (Until 2026-10-19 this kernel used
+#   exp(+iφIz)·D·exp(−iφIz), i.e. the opposite phase sign: a pulse optimised
+#   before then reproduces with φ → −φ.)
 #
 #   Matrix-vector action per step:
-#     [U_k(φ_n) ψ]_m = exp(+i φ_n m) · Σ_m' D_k[m,m'] · exp(-i φ_n m') · ψ_{m'}
+#     [U_k(φ_n) ψ]_m = exp(-i φ_n m) · Σ_m' D_k[m,m'] · exp(+i φ_n m') · ψ_{m'}
 #
 #   Per-step cost:  O(N_ens × (2I+1)²)  mat-vec with precomputed D_k
 #   vs standard:   O(N_ens × (2I+1)³)  full eigendecomposition at every step
@@ -124,14 +128,14 @@ function spinI_forward_pass!(Psi       :: Array{ComplexF64,3},
     psi_d   = zeros(ComplexF64, dim)
 
     for n in 1:N_TS
-        exp_neg = cis.(-phi[n] .* m_values)   # exp(-i φ_n m), length dim
-        exp_pos = cis.( phi[n] .* m_values)   # exp(+i φ_n m), length dim
+        ph_in  = cis.( phi[n] .* m_values)    # exp(+i φ_n m): applied first
+        ph_out = cis.(-phi[n] .* m_values)    # exp(-i φ_n m): applied last
         for k in 1:N_ens
             psi_prev = @view Psi[k, :, n]
-            @. psi_rot = exp_neg * psi_prev                          # phase
+            @. psi_rot = ph_in * psi_prev                            # phase
             Dk_k = @view Dk_matrices[k, :, :]
             mul!(psi_d, Dk_k, psi_rot)                               # mat-vec
-            @. Psi[k, :, n+1] = exp_pos * psi_d                     # phase
+            @. Psi[k, :, n+1] = ph_out * psi_d                     # phase
         end
     end
 end
@@ -234,8 +238,8 @@ function _spinI_grad_state(phi, Dk_matrices, psi_init, psi_targ, m_values, N_TS,
     lam_d    = zeros(ComplexF64, dim)
 
     for n in N_TS:-1:1
-        exp_neg = cis.(-phi[n] .* m_values)
-        exp_pos = cis.( phi[n] .* m_values)
+        ph_in  = cis.( phi[n] .* m_values)
+        ph_out = cis.(-phi[n] .* m_values)
 
         psi_curr = @view Psi[:, :, n+1]   # ψ_k[n], after step n
         psi_prev = @view Psi[:, :, n]     # ψ_k[n-1], before step n
@@ -248,13 +252,13 @@ function _spinI_grad_state(phi, Dk_matrices, psi_init, psi_targ, m_values, N_TS,
         end
 
         # Backward propagate Lambda: λ[n-1] = U_k(φ_n)† λ[n]
-        # U† = exp(+i φ_n Iz) D_k† exp(-i φ_n Iz)
+        # U† = exp(-i φ_n Iz) D_k† exp(+i φ_n Iz)
         for k in 1:N_ens
             lam = @view Lambda[k, :]
-            @. lam_rot = exp_neg * lam                 # exp(-i φ_n Iz) λ
+            @. lam_rot = ph_in * lam                   # exp(+i φ_n Iz) λ
             Dk_adj_k = @view Dk_adj[k, :, :]
             mul!(lam_d, Dk_adj_k, lam_rot)             # D_k† (lam_rot)
-            @. Lambda[k, :] = exp_pos * lam_d          # exp(+i φ_n Iz) (lam_d)
+            @. Lambda[k, :] = ph_out * lam_d           # exp(-i φ_n Iz) (lam_d)
         end
 
         # Compute term from propagated lambda (= λ_k[n-1])
@@ -263,7 +267,7 @@ function _spinI_grad_state(phi, Dk_matrices, psi_init, psi_targ, m_values, N_TS,
             term2 += imag(dot(@view(Lambda[k, :]), m_values .* @view(psi_prev[k, :])))
         end
 
-        GJ[n] = term2 - term1
+        GJ[n] = term1 - term2          # dU/dφ = +i[U, Iz]-type; see header
     end
 
     return F, GJ
@@ -285,20 +289,20 @@ function _spinI_grad_real_trace(phi, Dk_matrices, U_targ, m_values, N_TS, N_ens,
     # Forward pass: same logic as spinI_forward_pass! but applied to matrices
     D_mat = zeros(ComplexF64, dim, dim)
     for n in 1:N_TS
-        exp_neg = cis.(-phi[n] .* m_values)
-        exp_pos = cis.( phi[n] .* m_values)
+        ph_in  = cis.( phi[n] .* m_values)
+        ph_out = cis.(-phi[n] .* m_values)
         for k in 1:N_ens
             Phi_prev = @view Phi[k, :, :, n]
-            # Phase: scale each row m by exp(-i φ m) → (Iz-rotation on ket)
+            # Phase: scale each row m by exp(+i φ m) (ph_in, applied first)
             for m in 1:dim
-                D_mat[m, :] .= exp_neg[m] .* @view(Phi_prev[m, :])
+                D_mat[m, :] .= ph_in[m] .* @view(Phi_prev[m, :])
             end
             Dk_k = @view Dk_matrices[k, :, :]
             # D_k * D_mat → replace rows of Phi_next
             mul!(@view(Phi[k, :, :, n+1]), Dk_k, D_mat)
-            # Phase: scale each row m by exp(+i φ m)
+            # Phase: scale each row m by exp(-i φ m) (ph_out, applied last)
             for m in 1:dim
-                Phi[k, m, :, n+1] .*= exp_pos[m]
+                Phi[k, m, :, n+1] .*= ph_out[m]
             end
         end
     end
@@ -340,8 +344,8 @@ function _spinI_grad_real_trace(phi, Dk_matrices, U_targ, m_values, N_TS, N_ens,
     chi_d   = zeros(ComplexF64, dim, dim)
 
     for n in N_TS:-1:1
-        exp_neg = cis.(-phi[n] .* m_values)
-        exp_pos = cis.( phi[n] .* m_values)
+        ph_in  = cis.( phi[n] .* m_values)
+        ph_out = cis.(-phi[n] .* m_values)
 
         Phi_curr = @view Phi[:, :, :, n+1]  # propagator after step n
         Phi_prev = @view Phi[:, :, :, n]    # propagator before step n
@@ -359,18 +363,18 @@ function _spinI_grad_real_trace(phi, Dk_matrices, U_targ, m_values, N_TS, N_ens,
         end
 
         # Backward propagate Chi: Chi[n-1] = U_k(φ_n)† Chi[n]
-        # Apply U† = exp(+iφIz) D† exp(-iφIz) to each column of Chi
+        # Apply U† = exp(-iφIz) D† exp(+iφIz) to each column of Chi
         for k in 1:N_ens
             Chi_k = @view Chi[k, :, :]
-            # Phase each row by exp(-i φ m)
+            # Phase each row by exp(+i φ m)   (ph_in, applied first)
             for m in 1:dim
-                chi_rot[m, :] .= exp_neg[m] .* @view(Chi_k[m, :])
+                chi_rot[m, :] .= ph_in[m] .* @view(Chi_k[m, :])
             end
             Dk_adj_k = @view Dk_adj[k, :, :]
             mul!(chi_d, Dk_adj_k, chi_rot)
-            # Phase each row by exp(+i φ m)
+            # Phase each row by exp(-i φ m)   (ph_out, applied last)
             for m in 1:dim
-                Chi[k, m, :] .= exp_pos[m] .* @view(chi_d[m, :])
+                Chi[k, m, :] .= ph_out[m] .* @view(chi_d[m, :])
             end
         end
 
@@ -383,7 +387,7 @@ function _spinI_grad_real_trace(phi, Dk_matrices, U_targ, m_values, N_TS, N_ens,
             end
         end
 
-        GJ[n] = term2 - term1
+        GJ[n] = term1 - term2          # dU/dφ = +i[U, Iz]-type; see header
     end
 
     return F, GJ
@@ -424,8 +428,8 @@ function spinI_fidelity_forward(phi        :: AbstractVector{Float64},
         for k in 1:N_ens; Phi[k, :, :, 1] .= Matrix{ComplexF64}(I, dim, dim); end
         D_mat = zeros(ComplexF64, dim, dim)
         for n in 1:N_TS
-            ep = cis.(-phi[n] .* m_values)
-            eq = cis.( phi[n] .* m_values)
+            ep = cis.( phi[n] .* m_values)    # exp(+i φ_n m): applied first
+            eq = cis.(-phi[n] .* m_values)    # exp(-i φ_n m): applied last
             for k in 1:N_ens
                 Pp = @view Phi[k, :, :, n]
                 for m in 1:dim; D_mat[m, :] .= ep[m] .* @view(Pp[m, :]); end

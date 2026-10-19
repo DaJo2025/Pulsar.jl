@@ -129,11 +129,8 @@ using Random
             F, GJ = spinI_fidelity_and_grad(k, φ)
             @test F ≈ k(φ) atol = 1e-12
             @test relerr(GJ, fd(p -> 1 - k(p), φ)) < 1e-5
-            if Ival == 0.5
-                # spin-½ is the SU(2) kernel — with the RF phase of the opposite
-                # sign: the spin-I step is e^{+iφIz}·D·e^{−iφIz} (field
-                # Ix·cos φ − Iy·sin φ), the SU(2) step e^{−iφIz}·D·e^{+iφIz}.
-                @test F ≈ SU2Kernel(offs, RF, dt, π / 2, π / 2, 0.0; metric = m)(-φ) atol = 1e-10
+            if Ival == 0.5      # spin-½ is the SU(2) kernel (same RF-phase convention)
+                @test F ≈ SU2Kernel(offs, RF, dt, π / 2, π / 2, 0.0; metric = m)(φ) atol = 1e-10
             end
         end
     end
