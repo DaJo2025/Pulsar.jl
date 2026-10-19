@@ -48,6 +48,9 @@ end
     section("Physics – Fidelity Metric Coverage (all algorithms/applications)")
     include("Physics/FidelityMetricCoverageTests.jl")
 
+    section("Physics – One Fidelity-Metric Implementation in Every Kernel")
+    include("Physics/MetricKernelTests.jl")
+
     section("Physics – Hardware-Aware Pulse Composition (Theme 9)")
     include("Physics/PulseCompositionTests.jl")
 
