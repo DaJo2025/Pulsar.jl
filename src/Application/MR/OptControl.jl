@@ -295,35 +295,44 @@ function MRControl(;
     )
 end
 
-# An EnsembleAveraging in the form MRControl's kernels average natively: an
-# unweighted mean over drifts × pwr_levels × state pairs. Term axes multiply the
-# drift list (each drift gets every added term), drive scales the power levels,
-# StateProbes become the state pairs.
+# An EnsembleAveraging in the form the MR kernels average natively: an
+# unweighted mean over drifts × pwr_levels × pairs. Term axes multiply the drift
+# list (each drift gets every added term), drive scales the power levels,
+# StateProbes become the state pairs. LindbladMRControl (`liouville = true`)
+# also takes OperatorProbes, as vec(A/‖A‖) → vec(B/‖B‖): its kernel scores the
+# unnormalised Tr(σ_targ† σ), and normalising here makes that the probe overlap
+# Tr(B†UAU†)/(‖A‖‖B‖) that ensemble_averaging scores.
 function _mr_expand_ensemble(ens::EnsembleAveraging, drifts, pwr_levels, rho_init, rho_targ,
-                             fidelity)
-    _require_uniform_mean(ens, (TermAxis, DriveScaleAxis), "MRControl")
+                             fidelity; context::AbstractString = "MRControl",
+                             default_metric::Symbol = :state_real, liouville::Bool = false)
+    _require_uniform_mean(ens, (TermAxis, DriveScaleAxis), context)
     D = [Matrix{ComplexF64}(H) for H in drifts]
     for a in ens.axes
         if a isa TermAxis
             all(size(a.operator) == size(H) for H in D) || throw(DimensionMismatch(
-                "MRControl: $(a.label) operator $(size(a.operator)) ≠ drift $(size(D[1]))"))
+                "$context: $(a.label) operator $(size(a.operator)) ≠ drift $(size(D[1]))"))
             D = [H .+ (2π * v) .* a.operator for v in a.values for H in D]
         else
             a.channels === :all || throw(ArgumentError(
-                "MRControl scales the whole RF field: DriveScaleAxis channels must be :all"))
+                "$context scales the whole RF field: DriveScaleAxis channels must be :all"))
             pwr_levels = [p * v for v in a.values for p in pwr_levels]
         end
     end
     if ens.probes !== nothing
-        ens.probes isa StateProbes || throw(ArgumentError(
-            "MRControl propagates state vectors; OperatorProbes need LindbladMRControl " *
-            "or ensemble_averaging"))
         (rho_init === nothing && rho_targ === nothing) || throw(ArgumentError(
-            "MRControl: the ensemble's StateProbes are the state pairs; do not also pass " *
+            "$context: the ensemble's probe pairs are the state pairs; do not also pass " *
             "rho_init / rho_targ"))
-        rho_init, rho_targ = ens.probes.inputs, ens.probes.targets
+        if ens.probes isa StateProbes
+            rho_init, rho_targ = ens.probes.inputs, ens.probes.targets
+        else
+            liouville || throw(ArgumentError(
+                "$context propagates state vectors; OperatorProbes need LindbladMRControl " *
+                "or ensemble_averaging"))
+            rho_init = [vec(A ./ norm(A)) for A in ens.probes.inputs]
+            rho_targ = [vec(B ./ norm(B)) for B in ens.probes.targets]
+        end
     end
-    fidelity = _front_end_metric(ens, fidelity, :state_real, "MRControl")
+    fidelity = _front_end_metric(ens, fidelity, default_metric, context)
     return D, pwr_levels, rho_init, rho_targ, fidelity
 end
 
@@ -901,6 +910,15 @@ backend        = get_device()   # :cpu | :metal | :cuda
 precision      = :f64           # :f64 | :f32  (GPU only; Metal always uses :f32)
 ```
 
+# Ensemble
+`ensemble = EnsembleAveraging(...)` expands as for `MRControl` (term axes ×
+`drifts`, `DriveScaleAxis` × `pwr_levels`; the jump operators apply to every
+member), and its probe pairs become `rho_init` / `rho_targ`: `StateProbes` as
+pure states, `OperatorProbes` as `vec(A/‖A‖)` → `vec(B/‖B‖)` — operator
+transfer A → B scored on Tr(B†ρ(T))/(‖A‖‖B‖), the overlap `ensemble_averaging`
+uses. Only uniformly weighted `:mean` ensembles of those axes are accepted.
+`rho_init` / `rho_targ` may then be omitted.
+
 `precision = :f32` halves GPU memory usage at the cost of single-precision arithmetic
 (usually negligible for NMR gradient accuracy). Metal always uses Float32 regardless.
 GPU support is most beneficial for N ≥ 8 (3+ spins, Liouville dim ≥ 64).
@@ -910,8 +928,8 @@ function LindbladMRControl(;
     operators      :: Vector{<:Matrix{<:Number}},
     jump_ops       :: Vector{<:Matrix{<:Number}} = Matrix{ComplexF64}[],
     decay_rates    :: Vector{Float64}            = Float64[],
-    rho_init,
-    rho_targ,
+    rho_init       = nothing,
+    rho_targ       = nothing,
     pwr_levels     :: Vector{Float64},
     pulse_dt       :: Vector{Float64},
     penalties      :: Vector{Symbol}  = [:none],
@@ -921,14 +939,24 @@ function LindbladMRControl(;
     method         :: Symbol          = :lbfgs,
     max_iter       :: Int             = 500,
     grad_tol       :: Float64         = 1e-7,
-    fidelity       :: Symbol          = :dm_squared,
+    fidelity       :: Union{Nothing, Symbol} = nothing,   # nothing → :dm_squared
     lbfgs_memory   :: Int             = 10,
     verbose        :: Bool            = true,
     print_interval :: Int             = 1,
     backend        :: Symbol          = get_device(),
     precision      :: Symbol          = :f64,
     fast_path      :: Union{Nothing, Bool} = nothing,
+    ensemble       :: Union{Nothing, EnsembleAveraging} = nothing,
 )
+    if ensemble !== nothing
+        drifts, pwr_levels, rho_init, rho_targ, fidelity =
+            _mr_expand_ensemble(ensemble, drifts, pwr_levels, rho_init, rho_targ, fidelity;
+                                context = "LindbladMRControl", default_metric = :dm_squared,
+                                liouville = true)
+    end
+    fidelity === nothing && (fidelity = :dm_squared)
+    (rho_init === nothing || rho_targ === nothing) && throw(ArgumentError(
+        "LindbladMRControl needs rho_init and rho_targ (or an ensemble whose probe pairs supply them)"))
     length(jump_ops) == length(decay_rates) ||
         throw(ArgumentError("jump_ops and decay_rates must have the same length " *
                             "(got $(length(jump_ops)) and $(length(decay_rates)))"))

@@ -7,6 +7,8 @@
 #   - MRControl(…; ensemble)                = MRControl with the drifts / pwr_levels /
 #                                             state pairs written out, and
 #                                             ensemble_averaging on a QuantumSystem
+#   - LindbladMRControl(…; ensemble)        = the same, with operator probes as
+#                                             normalised vec(A) → vec(B) pairs
 #   - SU2Kernel(ens, …), SpinIKernel(ens, …) = their offsets × amp_factors lists,
 #                                             and ensemble_averaging
 #   - grape_optimize(…; ensemble)           reports the ensemble fidelity it optimised
@@ -163,6 +165,59 @@ using Random
         @test_throws ArgumentError mk(EnsembleAveraging(; probes = StateProbes([ψi], [ψt])))   # pairs twice
         @test_throws ArgumentError mk(EnsembleAveraging(; probes = OperatorProbes([Iz_], [Iz_])))
         @test_throws ArgumentError MRControl(; drifts = [hamiltonian(sys)], pwr_levels = [pwr], common...)
+    end
+
+    @testset "LindbladMRControl(…; ensemble)" begin
+        rng = MersenneTwister(14)
+        sys = mr_system("1H")
+        Iz_, Ix_, Iy_ = spin_op(sys, :Iz), spin_op(sys, :Ix), spin_op(sys, :Iy)
+        offs = [-1500.0, 0.0, 2000.0]; scales = [0.95, 1.05]; pwr = 2π * 8e3
+        n_t = 30; dt = 2e-6
+        common = (operators = [Ix_, Iy_], pulse_dt = fill(dt, n_t), verbose = false, backend = :cpu)
+        U = exp(-im * π .* Ix_)                                  # 180°x as a universal rotation
+        probes = operator_probes(U; set = :pauli)
+        ens = EnsembleAveraging(OffsetAxis(offs; operator = Iz_), DriveScaleAxis(scales);
+                                probes, metric = :dm_real)
+        c = LindbladMRControl(; drifts = [hamiltonian(sys)], pwr_levels = [pwr], ensemble = ens, common...)
+        @test length(c.drifts) == 3 && c.pwr_levels ≈ pwr .* scales
+        @test length(c.rho_init) == 3 && c.fidelity === :dm_real
+        w = 0.6 .* randn(rng, 2, n_t)
+        F, _ = grape_lindblad_kernel(w, c)
+        qs  = quantum_system(hamiltonian(sys), [pwr .* Ix_, pwr .* Iy_])
+        seq = ControlSequence(Matrix(w'), dt, n_t)
+        # closed system: the Liouville kernel scores exactly the probe average
+        @test F ≈ ensemble_averaging(ens, qs, seq; gradient = false) atol = 1e-12
+        # with relaxation: identical to the problem written out by hand
+        jops, rates = mr_relaxation(sys; T1 = 1e-3, T2star = 2e-4)
+        c_r = LindbladMRControl(; drifts = [hamiltonian(sys)], pwr_levels = [pwr], ensemble = ens,
+                                jump_ops = jops, decay_rates = rates, common...)
+        c_h = LindbladMRControl(; drifts = [hamiltonian(sys) .+ 2π * δ .* Iz_ for δ in offs],
+                                pwr_levels = pwr .* scales, fidelity = :dm_real,
+                                rho_init = [vec(A ./ norm(A)) for A in probes.inputs],
+                                rho_targ = [vec(B ./ norm(B)) for B in probes.targets],
+                                jump_ops = jops, decay_rates = rates, common...)
+        Fr, Gr = grape_lindblad_kernel(w, c_r)
+        Fh, Gh = grape_lindblad_kernel(w, c_h)
+        @test Fr ≈ Fh atol = 1e-14
+        @test Gr ≈ Gh rtol = 1e-12
+        @test abs(Fr - F) > 1e-3                                 # the jump operators act
+        # StateProbes become pure states; :auto keeps LindbladMRControl's :dm_squared
+        sp = StateProbes([spin_state(sys, :Iz)], [spin_state(sys, :mIz)])
+        e_s = EnsembleAveraging(OffsetAxis(offs; operator = Iz_); probes = sp)
+        c_s = LindbladMRControl(; drifts = [hamiltonian(sys)], pwr_levels = [pwr], ensemble = e_s, common...)
+        @test c_s.fidelity === :dm_squared && length(c_s.rho_init[1]) == 2
+        @test grape_lindblad_kernel(w, c_s)[1] ≈
+              ensemble_averaging(e_s, qs, seq; metric = :dm_squared, gradient = false) atol = 1e-12
+        # refusals
+        base = (drifts = [hamiltonian(sys)], pwr_levels = [pwr])
+        mk(e; kw...) = LindbladMRControl(; base..., common..., ensemble = e, kw...)
+        @test_throws ArgumentError mk(EnsembleAveraging(OffsetAxis(offs; operator = Iz_); probes,
+                                                         aggregate = :worst_case))
+        @test_throws ArgumentError mk(EnsembleAveraging(DrivePhaseAxis([0.1]); probes))
+        @test_throws ArgumentError mk(ens; fidelity = :dm_squared)                  # metric conflict
+        @test_throws ArgumentError mk(ens; rho_init = [spin_state(sys, :Iz)],
+                                      rho_targ = [spin_state(sys, :mIz)])             # pairs twice
+        @test_throws ArgumentError mk(EnsembleAveraging(OffsetAxis(offs; operator = Iz_)))   # no pairs
     end
 
     @testset "SU2Kernel / SpinIKernel (ens, …)" begin
