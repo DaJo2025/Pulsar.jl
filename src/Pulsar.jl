@@ -162,6 +162,7 @@ include("Physics/SU2Objectives.jl")
 include("Physics/SpinIObjectives.jl")
 include("Physics/Penalties.jl")
 include("Physics/Gradients.jl")
+include("Physics/EnsembleAveraging.jl")     # ensemble_averaging evaluator
 include("Physics/Lindblad.jl")
 include("Physics/AutoDiff.jl")
 # Unified noise / ensemble abstraction (Theme 5)
@@ -466,8 +467,9 @@ export STATE_FIDELITY_TYPES, GATE_FIDELITY_TYPES
 export FIDELITY_METRICS, PROP_METRICS, STATE_METRICS, DM_METRICS
 export canonical_metric, metric_label
 export overlap_fidelity, overlap_weight
-# Ensemble averaging (Types/EnsembleAveraging.jl, Computation/EnsembleProbes.jl)
-export EnsembleAveraging, ensemble_members, ENSEMBLE_AGGREGATES,
+# Ensemble averaging (Types/EnsembleAveraging.jl, Computation/EnsembleProbes.jl,
+# Physics/EnsembleAveraging.jl)
+export EnsembleAveraging, ensemble_members, ensemble_averaging, ENSEMBLE_AGGREGATES,
        AbstractEnsembleAxis, TermAxis, OffsetAxis, CouplingAxis, DriveScaleAxis,
        DrivePhaseAxis, TimeScaleAxis, DriftListAxis, FunctionAxis,
        AbstractProbeSet, StateProbes, OperatorProbes, state_probes, operator_probes,

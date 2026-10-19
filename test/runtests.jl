@@ -51,6 +51,9 @@ end
     section("Physics – One Fidelity-Metric Implementation in Every Kernel")
     include("Physics/MetricKernelTests.jl")
 
+    section("Physics – Ensemble Averaging (axes × input states × aggregators)")
+    include("Physics/EnsembleAveragingTests.jl")
+
     section("Physics – Hardware-Aware Pulse Composition (Theme 9)")
     include("Physics/PulseCompositionTests.jl")
 
