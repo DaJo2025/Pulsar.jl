@@ -351,28 +351,63 @@ function _grape_gradient_from_propagators(Us::Array{ComplexF64,3},
 
     if target.type == "unitary" && target.target_unitary !== nothing
         U_targ = target.target_unitary
-        Φ = tr(U_targ' * U_total) / dim
-        for k in 1:n_t
-            Pk = P[k, :, :]
-            Qk = Q[k, :, :]
+        # Gate overlap Φ = Tr(U_target† U_total)/dim; the fidelity is the target's
+        # metric of Φ (default Φ^P_Q = |Φ|²) and dF = Re(w·dΦ) with its chain
+        # weight w (2Φ̄ for the default). The per-step trace must carry U_target†
+        # (co-state A_k = P_k·U_target†·Q_k†, matching the verified
+        # _gate_gradient_into! kernel): dropping it makes the gradient
+        # target-independent. dΦ carries Φ's 1/dim as the explicit 1/dim below.
+        #
+        # Cyclic-trace speedup: Tr(Q_k† (-i dt H_j) P_k U_target†) = -i dt·Tr(H_j·M_k)
+        # with the step co-state M_k = P_k·U_target†·Q_k† built ONCE per step, so each
+        # control reduces to the dim² contraction Tr(H_j·M_k) with no per-(step,
+        # control) matrix products or heap allocations (was 3 dim³ products each).
+        Φ   = tr(U_targ' * U_total) / dim
+        mΦ  = target.metric === :auto ? :prop_squared : target.metric
+        wΦ  = overlap_weight(mΦ, Φ; dim)
+        Utd = Matrix{ComplexF64}(U_targ')
+        Pkc = Matrix{ComplexF64}(undef, dim, dim)
+        Qkc = Matrix{ComplexF64}(undef, dim, dim)
+        T1  = Matrix{ComplexF64}(undef, dim, dim)
+        Mk  = Matrix{ComplexF64}(undef, dim, dim)
+        @inbounds for k in 1:n_t
+            @views copyto!(Pkc, P[k, :, :])
+            @views copyto!(Qkc, Q[k, :, :])
+            mul!(T1, Pkc, Utd)          # P_k · U_target†
+            mul!(Mk, T1, Qkc')          # · Q_k†   ⇒  M_k = P_k U_target† Q_k†
             for (j, Hj) in enumerate(H_controls)
-                inner = tr(Qk' * (-im * dt * Hj) * Pk)
-                G[j,k] = 2 * real(conj(Φ) * inner) / dim^2
+                s = zero(ComplexF64)
+                for b in 1:dim, a in 1:dim
+                    s += Hj[a, b] * Mk[b, a]        # Tr(H_j · M_k)
+                end
+                G[j, k] = real(wΦ * (-im * dt * s)) / dim
             end
         end
     elseif target.type == "state" && target.target_state !== nothing
         ψ_targ = target.target_state
         ψ_init = target.initial_state === nothing ? ψ_targ : target.initial_state
         ψ_final = U_total * ψ_init
-        ov = dot(ψ_targ, ψ_final)
-        for k in 1:n_t
-            Pk = P[k, :, :]
-            Qk = Q[k, :, :]
-            psi_k    = Pk * ψ_init
-            lambda_k = Qk * ψ_targ
+        ov  = dot(ψ_targ, ψ_final)
+        mS  = target.metric === :auto ? :state_squared : target.metric
+        wS  = pure_state_weight(mS, ov)      # state row, or DM row on the pure state
+        Pkc = Matrix{ComplexF64}(undef, dim, dim)
+        Qkc = Matrix{ComplexF64}(undef, dim, dim)
+        psi_k    = Vector{ComplexF64}(undef, dim)
+        lambda_k = Vector{ComplexF64}(undef, dim)
+        Hpsi     = Vector{ComplexF64}(undef, dim)
+        @inbounds for k in 1:n_t
+            @views copyto!(Pkc, P[k, :, :])
+            @views copyto!(Qkc, Q[k, :, :])
+            mul!(psi_k,    Pkc, ψ_init)
+            mul!(lambda_k, Qkc, ψ_targ)
             for (j, Hj) in enumerate(H_controls)
-                inner = dot(lambda_k, (-im * dt * Hj) * psi_k)
-                G[j,k] = 2 * imag(conj(ov) * inner)
+                # ∂F = Re(w·∂ov) with the metric's chain weight (2·conj(ov) for
+                # the default |ov|², matching _state_gradient_into!). Buffer
+                # H_j·ψ_k to avoid the per-(step,control) scaled-matrix + matvec
+                # allocation.
+                mul!(Hpsi, Hj, psi_k)
+                inner = -im * dt * dot(lambda_k, Hpsi)
+                G[j, k] = real(wS * inner)
             end
         end
     end
