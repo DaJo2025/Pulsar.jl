@@ -462,6 +462,21 @@ function _optimcon_lbfgs(ctrl::AbstractMRControl,
                     iter, F_curr, F_curr - F_prev, gnorm)
         end
 
+        # Fire the user callback (Pulsar Studio uses this for live monitoring).
+        # Pass the current controls matrix as `w=w` so the renderer can stream
+        # snapshots. Callbacks without a `w=` kwarg get a MethodError; we fall
+        # back to the legacy 2-arg signature so pre-Studio scripts keep working.
+        # (LindbladMRControl has no `callback` field — hence the hasproperty guard.)
+        if hasproperty(ctrl, :callback) && ctrl.callback !== nothing
+            try
+                ctrl.callback(iter, F_curr; grad=gnorm, evals=n_fid+n_grad, w=w)
+            catch e
+                e isa MethodError ?
+                    ctrl.callback(iter, F_curr; grad=gnorm, evals=n_fid+n_grad) :
+                    rethrow(e)
+            end
+        end
+
         ctrl.max_iter > 0 && F_curr >= 1.0 - 1e-8 &&
             (converged = true; reason = "near-perfect fidelity"; break)
         gnorm < ctrl.grad_tol &&
@@ -544,6 +559,19 @@ function _optimcon_grape(ctrl::AbstractMRControl,
         if ctrl.verbose && (iter % ctrl.print_interval == 0 || iter == 1)
             @printf("  %6d  %.8f  %+.3e  %.3e\n",
                     iter, F_curr, F_curr - F_prev, gnorm)
+        end
+
+        # User callback (Pulsar Studio live monitor). Same backward-compat shim
+        # as _optimcon_lbfgs: try the new `w=` signature, fall back on MethodError.
+        # (LindbladMRControl has no `callback` field — hence the hasproperty guard.)
+        if hasproperty(ctrl, :callback) && ctrl.callback !== nothing
+            try
+                ctrl.callback(iter, F_curr; grad=gnorm, evals=n_fid+n_grad, w=w)
+            catch e
+                e isa MethodError ?
+                    ctrl.callback(iter, F_curr; grad=gnorm, evals=n_fid+n_grad) :
+                    rethrow(e)
+            end
         end
 
         F_curr >= 1.0 - 1e-8 && (converged = true; reason = "near-perfect fidelity"; break)
@@ -1423,6 +1451,7 @@ function _optimcon_generic(ctrl, guess::Matrix{Float64};
                         lower          = lb, upper    = ub,
                         memory         = ctrl.lbfgs_memory,
                         max_iter       = ctrl.max_iter,
+                        tol            = ctrl.grad_tol,
                         verbose        = ctrl.verbose,
                         print_interval = ctrl.print_interval,
                         callback       = cb)

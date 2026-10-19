@@ -308,6 +308,7 @@ include("Types/NVCenterSystem.jl")
 # ---------------------------------------------------------------------------
 include("Application/MR/LindbladMR.jl")
 include("Application/MR/GRAPEState.jl")
+include("Application/MR/GRAPEGate.jl")
 include("Application/MR/GRAPEPhase.jl")
 include("Application/MR/GRAPELindblad.jl")
 include("Application/MR/GRAPETracking.jl")

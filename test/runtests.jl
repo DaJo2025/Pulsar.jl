@@ -78,6 +78,9 @@ end
     section("Application – LindbladMRControl Algorithm Sweep (Theme 6b)")
     include("Application/MR/LindbladMRAlgorithmSweepTests.jl")
 
+    section("Application – MR gate kernel (grape_gate_kernel)")
+    include("Application/MR/GRAPEGateTests.jl")
+
     section("Algorithms – GRAPE")
     include("Algorithms/GRAPETests.jl")
 

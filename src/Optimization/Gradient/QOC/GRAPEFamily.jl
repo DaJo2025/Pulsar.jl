@@ -120,7 +120,19 @@ function grape_optimize(
         verbose && iter % print_interval == 0 &&
             @printf("  grape iter %4d  F=%.6f  α=%.3e  |g|=%.3e\n",
                     iter, -f_cur, α, gnorm)
-        isnothing(callback) || callback(iter, -f_cur; grad=gnorm, evals=n_fid+n_grd)
+        # Fire user callback, passing the current flat parameter vector as
+        # `w=θ` so downstream consumers (Pulsar Studio live monitor, early-stop
+        # hooks) can reconstruct the waveform. Legacy callbacks without a `w=`
+        # kwarg get the old 2-arg call via the MethodError fallback.
+        if !isnothing(callback)
+            try
+                callback(iter, -f_cur; grad=gnorm, evals=n_fid+n_grd, w=θ)
+            catch err
+                err isa MethodError ?
+                    callback(iter, -f_cur; grad=gnorm, evals=n_fid+n_grd) :
+                    rethrow(err)
+            end
+        end
     end
 
     verbose &&
@@ -211,9 +223,23 @@ function grape_cg_optimize(
         α, f_new = _gf_ls!(θ_t, g_ls, f, grad!, θ, d, g, f_cur)
         n_fid += 2
 
-        θ .+= α .* d
-        bounded && @. θ = clamp(θ, lb, ub)
-        f_cur = f_new
+        # Project the step onto the bounds and re-evaluate at the feasible point
+        # if projection moved it (otherwise f_new — measured at the unclamped
+        # trial — would not match the clamped θ, decoupling f_best from θ_best
+        # and returning a phantom "best" fidelity the controls don't reproduce).
+        if bounded
+            clamped = false
+            @inbounds for i in 1:n
+                θi = θ[i] + α * d[i]
+                ci = clamp(θi, lb[i], ub[i])
+                ci != θi && (clamped = true)
+                θ[i] = ci
+            end
+            f_cur = clamped ? (n_fid += 1; f(θ)) : f_new
+        else
+            θ .+= α .* d
+            f_cur = f_new
+        end
 
         grad!(g, θ);  n_grd += 1
         if f_cur < f_best;  f_best = f_cur;  θ_best .= θ;  end
@@ -229,7 +255,19 @@ function grape_cg_optimize(
         verbose && iter % print_interval == 0 &&
             @printf("  grape_cg(%s) iter %4d  F=%.6f  |g|=%.3e\n",
                     cg_method, iter, -f_cur, gnorm)
-        isnothing(callback) || callback(iter, -f_cur; grad=gnorm, evals=n_fid+n_grd)
+        # Fire user callback, passing the current flat parameter vector as
+        # `w=θ` so downstream consumers (Pulsar Studio live monitor, early-stop
+        # hooks) can reconstruct the waveform. Legacy callbacks without a `w=`
+        # kwarg get the old 2-arg call via the MethodError fallback.
+        if !isnothing(callback)
+            try
+                callback(iter, -f_cur; grad=gnorm, evals=n_fid+n_grd, w=θ)
+            catch err
+                err isa MethodError ?
+                    callback(iter, -f_cur; grad=gnorm, evals=n_fid+n_grd) :
+                    rethrow(err)
+            end
+        end
     end
 
     verbose &&
@@ -323,10 +361,23 @@ function grape_lbfgsb_optimize(
         α, f_new = _gf_ls!(θ_t, g_ls, f, grad!, θ, d, g, f_cur)
         n_fid += 2
 
-        s = α .* d              # freshly allocated; moved directly into S
-        θ .+= s
-        @. θ = clamp(θ, lb, ub)
-        f_cur = f_new
+        # The line search measured `f_new` at the UNCLAMPED trial θ+α·d; if
+        # projection onto [lb,ub] actually moves the point (a bound was crossed)
+        # that value is stale, so re-evaluate at the feasible point. This keeps
+        # f_cur ↔ θ consistent — and hence the returned f_best ↔ θ_best —
+        # preventing a phantom "best" fidelity that the returned controls do not
+        # reproduce. `s` is corrected to the actual projected step before it
+        # enters the L-BFGS history.
+        s = α .* d              # nominal step; corrected to the projected step below
+        clamped = false
+        @inbounds for i in 1:n
+            θi = θ[i] + s[i]
+            ci = clamp(θi, lb[i], ub[i])
+            ci != θi && (clamped = true)
+            s[i] = ci - θ[i]    # actual projected step (moved into S)
+            θ[i] = ci
+        end
+        f_cur = clamped ? (n_fid += 1; f(θ)) : f_new
 
         grad!(g_new, θ);  n_grd += 1
         y  = g_new .- g         # fresh; moved directly into Y below
@@ -343,7 +394,19 @@ function grape_lbfgsb_optimize(
         verbose && iter % print_interval == 0 &&
             @printf("  grape_lbfgsb iter %4d  F=%.6f  |∇P|=%.3e  m=%d\n",
                     iter, -f_cur, pg_norm, length(S))
-        isnothing(callback) || callback(iter, -f_cur; grad=pg_norm, evals=n_fid+n_grd)
+        # Fire user callback, passing the current flat parameter vector as
+        # `w=θ` so downstream consumers (Pulsar Studio live monitor, early-stop
+        # hooks) can reconstruct the waveform. Legacy callbacks without a `w=`
+        # kwarg get the old 2-arg call via the MethodError fallback.
+        if !isnothing(callback)
+            try
+                callback(iter, -f_cur; grad=pg_norm, evals=n_fid+n_grd, w=θ)
+            catch err
+                err isa MethodError ?
+                    callback(iter, -f_cur; grad=pg_norm, evals=n_fid+n_grd) :
+                    rethrow(err)
+            end
+        end
     end
 
     verbose &&
