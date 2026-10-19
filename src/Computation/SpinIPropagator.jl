@@ -14,8 +14,11 @@
 #   vs standard:   O(N_ens × (2I+1)³)  full eigendecomposition at every step
 #
 # Supported fidelity metrics:
-#   :state_squared — Φ^S_Q, ensemble state transfer  (1/N_ens) Σ_k |⟨ψ_targ|ψ_k(T)⟩|²
-#   :prop_real     — Φ^P_R, ensemble gate overlap    (1/(dim·N_ens)) Σ_k Re Tr(U_targ† U_k(T))
+#   state row  (target = (; psi_init, psi_targ)): :state_squared (Φ^S_Q, default),
+#              :state_real, :state_modulus on z_k = ⟨ψ_targ|ψ_k(T)⟩
+#   prop row   (target = U_targ): :prop_real (Φ^P_R), :prop_modulus, :prop_squared,
+#              :prop_average, :prop_real_quad on z_k = Tr(U_targ† U_k(T))/dim
+#   F is the ensemble mean of overlap_fidelity(metric, z_k); the adjoint is exact.
 #
 # Reduces exactly to SU2Propagator.jl for spin_I = 0.5.
 
@@ -137,11 +140,15 @@ end
 # Fidelity + gradient (exact adjoint)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Metrics the spin-I kernel implements (see `spinI_fidelity_gradient`).
-const SPINI_METRICS = (:state_squared, :prop_real)
+# Metrics the spin-I kernel implements (see `spinI_fidelity_gradient`): the
+# state row for a (ψ_init → ψ_targ) target, the propagator row for a unitary
+# target.  Listed state-first so the pre-Φ^X_Y name `:state` resolves there.
+const SPINI_METRICS = (:state_squared, :state_real, :state_modulus,
+                       :prop_real, :prop_modulus, :prop_squared, :prop_average,
+                       :prop_real_quad)
 
 _spinI_metric(metric::Symbol) =
-    (metric === :state_squared || metric === :prop_real) ? metric :
+    metric in SPINI_METRICS ? metric :
         canonical_metric(metric, SPINI_METRICS; context = "the spin-I kernel")
 
 """
@@ -156,8 +163,11 @@ Compute ensemble-averaged spin-I fidelity and exact gradient.
 - `target`      : for `:state_squared` — a `(; psi_init, psi_targ)` NamedTuple of `Vector{ComplexF64}`;
                   for `:prop_real` — `Matrix{ComplexF64}` (dim × dim unitary target U_targ)
 - `m_values`    : quantum numbers from `precompute_spinI_params`
-- `metric`      : `:state_squared` (Φ^S_Q, state-transfer |z|²) or `:prop_real`
-                  (Φ^P_R, Re Tr(U†U)/dim).  The pre-Φ^X_Y names `:state` and
+- `metric`      : any of `SPINI_METRICS` — the state row (`:state_squared`
+                  default, `:state_real`, `:state_modulus`) for a state target,
+                  the propagator row (`:prop_real`, `:prop_modulus`,
+                  `:prop_squared`, `:prop_average`, `:prop_real_quad`) for a
+                  unitary target.  The pre-Φ^X_Y names `:state` and
                   `:real_trace` are accepted with a deprecation warning.
 
 # Returns
@@ -176,19 +186,19 @@ function spinI_fidelity_gradient(phi        :: AbstractVector{Float64},
     N_TS  = length(phi)
     N_ens, dim, _ = size(Dk_matrices)
 
-    if metric === :state_squared
+    if _metric_level(metric) === :state
         return _spinI_grad_state(phi, Dk_matrices, target.psi_init, target.psi_targ,
-                                 m_values, N_TS, N_ens, dim)
-    elseif metric === :prop_real
-        return _spinI_grad_real_trace(phi, Dk_matrices, target, m_values, N_TS, N_ens, dim)
+                                 m_values, N_TS, N_ens, dim, metric)
     else
-        error("Unknown metric: $metric.  Choose :state_squared or :prop_real.")
+        return _spinI_grad_real_trace(phi, Dk_matrices, target, m_values, N_TS, N_ens,
+                                      dim, metric)
     end
 end
 
 # ─── :state_squared — state-transfer gradient ────────────────────────────────────────
 
-function _spinI_grad_state(phi, Dk_matrices, psi_init, psi_targ, m_values, N_TS, N_ens, dim)
+function _spinI_grad_state(phi, Dk_matrices, psi_init, psi_targ, m_values, N_TS, N_ens, dim,
+                           metric::Symbol = :state_squared)
     # Forward pass: store full trajectory Psi[k, m, n], n=1..N_TS+1
     Psi = zeros(ComplexF64, N_ens, dim, N_TS + 1)
     for k in 1:N_ens
@@ -199,12 +209,18 @@ function _spinI_grad_state(phi, Dk_matrices, psi_init, psi_targ, m_values, N_TS,
     # Fidelity and terminal co-states
     N_ens_f = Float64(N_ens)
     z   = [dot(psi_targ, @view Psi[k, :, N_TS+1]) for k in 1:N_ens]
-    F   = sum(abs2.(z)) / N_ens_f
+    F   = sum(overlap_fidelity.(metric, z)) / N_ens_f
 
-    # Lambda[k, :] = terminal co-state for ensemble member k
+    # Lambda[k, :] = terminal co-state for ensemble member k.  With
+    # dF = Re(w·dz) per member, the sweep below yields the gradient of
+    # J = 1 − F when the co-state is −conj(w)/N · ψ_targ.  (This used to read
+    # −conj(z)/N · ψ_targ for |z|² — conjugated the wrong way and missing the
+    # factor 2 of w = 2z̄ — so the state-transfer gradient disagreed with finite
+    # differences; the same bug was fixed in the SU(2) kernel.)
     Lambda = zeros(ComplexF64, N_ens, dim)
     for k in 1:N_ens
-        @. Lambda[k, :] = -(conj(z[k]) / N_ens_f) * psi_targ
+        cw = conj(overlap_weight(metric, z[k]))
+        @. Lambda[k, :] = -(cw / N_ens_f) * psi_targ
     end
 
     # Precompute D_k†: conj transpose, shape [N_ens, dim, dim]
@@ -256,7 +272,8 @@ end
 # ─── :prop_real — gate-fidelity gradient ─────────────────────────────────────
 # Run dim state-transfer problems simultaneously (propagate identity → columns of U_targ)
 
-function _spinI_grad_real_trace(phi, Dk_matrices, U_targ, m_values, N_TS, N_ens, dim)
+function _spinI_grad_real_trace(phi, Dk_matrices, U_targ, m_values, N_TS, N_ens, dim,
+                                metric::Symbol = :prop_real)
     N_ens_f = Float64(N_ens)
     # Forward pass: Phi_k[:, :, n] = propagator after n steps (starts from I_dim)
     # shape [N_ens, dim, dim, N_TS+1]
@@ -286,21 +303,30 @@ function _spinI_grad_real_trace(phi, Dk_matrices, U_targ, m_values, N_TS, N_ens,
         end
     end
 
-    # Fidelity: (1/(dim*N_ens)) Σ_k Re Tr(U_targ† Phi_k[:,:,N_TS+1])
-    F = 0.0
-    for k in 1:N_ens
-        Phi_final = @view Phi[k, :, :, N_TS + 1]
-        F += real(tr(U_targ' * Phi_final))
-    end
-    F /= (dim * N_ens_f)
-
-    # Terminal co-state matrices: Chi_k = -U_targ / (dim * N_ens) (same for all k)
-    Chi_targ = -(U_targ ./ (dim * N_ens_f))   # dim × dim, same for all k
-
-    # Per-ensemble co-state (broadcasted)
     Chi = zeros(ComplexF64, N_ens, dim, dim)
-    for k in 1:N_ens
-        Chi[k, :, :] .= Chi_targ
+    if has_constant_weight(metric)
+        # Φ^P_R: (1/(dim*N_ens)) Σ_k Re Tr(U_targ† Phi_k[:,:,N_TS+1]); the
+        # co-state −U_targ/(dim·N_ens) is the same for every member.
+        F = 0.0
+        for k in 1:N_ens
+            Phi_final = @view Phi[k, :, :, N_TS + 1]
+            F += real(tr(U_targ' * Phi_final))
+        end
+        F /= (dim * N_ens_f)
+        Chi_targ = -(U_targ ./ (dim * N_ens_f))   # dim × dim, same for all k
+        for k in 1:N_ens
+            Chi[k, :, :] .= Chi_targ
+        end
+    else
+        # Any other propagator metric on z_k = Tr(U_targ† Phi_k)/dim: dF = Re(w·dz)
+        # per member, co-state −conj(w_k)/(dim·N_ens) · U_targ.
+        F = 0.0
+        for k in 1:N_ens
+            zk = tr(U_targ' * @view(Phi[k, :, :, N_TS + 1])) / dim
+            F += overlap_fidelity(metric, zk; dim)
+            Chi[k, :, :] .= -(conj(overlap_weight(metric, zk; dim)) / (dim * N_ens_f)) .* U_targ
+        end
+        F /= N_ens_f
     end
 
     # Precompute D_k†
@@ -383,14 +409,15 @@ function spinI_fidelity_forward(phi        :: AbstractVector{Float64},
     N_ens, dim, _ = size(Dk_matrices)
     N_ens_f = Float64(N_ens)
 
-    if metric === :state_squared
+    if _metric_level(metric) === :state
         Psi = zeros(ComplexF64, N_ens, dim, N_TS + 1)
         for k in 1:N_ens; Psi[k, :, 1] .= target.psi_init; end
         spinI_forward_pass!(Psi, phi, Dk_matrices, m_values)
         psi_targ = target.psi_targ
-        return sum(k -> abs2(dot(psi_targ, @view(Psi[k, :, N_TS+1]))), 1:N_ens) / N_ens_f
+        return sum(k -> overlap_fidelity(metric, dot(psi_targ, @view(Psi[k, :, N_TS+1]))),
+                   1:N_ens) / N_ens_f
 
-    elseif metric === :prop_real
+    else
         U_targ = target  # Matrix{ComplexF64}
         # Propagate identity matrix
         Phi = zeros(ComplexF64, N_ens, dim, dim, N_TS + 1)
@@ -407,11 +434,15 @@ function spinI_fidelity_forward(phi        :: AbstractVector{Float64},
             end
         end
         F = 0.0
-        for k in 1:N_ens
-            F += real(tr(U_targ' * @view(Phi[k, :, :, N_TS+1])))
+        if has_constant_weight(metric)               # Φ^P_R
+            for k in 1:N_ens
+                F += real(tr(U_targ' * @view(Phi[k, :, :, N_TS+1])))
+            end
+            return F / (dim * N_ens_f)
         end
-        return F / (dim * N_ens_f)
-    else
-        error("Unknown metric: $metric.  Choose :state_squared or :prop_real.")
+        for k in 1:N_ens
+            F += overlap_fidelity(metric, tr(U_targ' * @view(Phi[k, :, :, N_TS+1])) / dim; dim)
+        end
+        return F / N_ens_f
     end
 end
