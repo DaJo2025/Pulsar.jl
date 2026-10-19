@@ -446,3 +446,16 @@ function hamiltonian(sys::HeteronuclearSystem;
     end
     return H
 end
+
+# ─── Operators for ensemble axes (see Types/EnsembleAveraging.jl) ─────────────
+
+function offset_operator(sys::MRSpinSystem; spins = :all)
+    idx = spins === :all ? (1:sys.n_spins) : spins
+    return sum(spin_op(sys, :Iz, i) for i in idx)
+end
+
+function coupling_operator(sys::MRSpinSystem, i::Int, j::Int; kind::Symbol = :isotropic)
+    kind === :zz && return spin_op(sys, :Iz, i) * spin_op(sys, :Iz, j)
+    kind === :isotropic || throw(ArgumentError("kind must be :isotropic or :zz"))
+    return sum(spin_op(sys, a, i) * spin_op(sys, a, j) for a in (:Ix, :Iy, :Iz))
+end

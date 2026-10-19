@@ -112,6 +112,7 @@ using Distributed
 include("Types/QuantumSystem.jl")
 include("Types/Targets.jl")
 include("Types/ControlSequence.jl")
+include("Types/EnsembleAveraging.jl")      # ensemble-average spec (data only)
 
 # ---------------------------------------------------------------------------
 # Layer 1b/1c interleave: parallelism primitives must be available to
@@ -126,6 +127,7 @@ include("Backend/Parallelism/CPUParallelization.jl")
 # Fidelity-metric arithmetic shared by every kernel (needs only the metric
 # names from Types/Targets.jl, so kernels in this layer can use it too).
 include("Computation/FidelityReductions.jl")
+include("Computation/EnsembleProbes.jl")    # input-state axis builders
 include("Computation/Propagators.jl")
 include("Computation/PropagatorRegistry.jl")
 include("Computation/PropagatorCache.jl")
@@ -464,6 +466,12 @@ export STATE_FIDELITY_TYPES, GATE_FIDELITY_TYPES
 export FIDELITY_METRICS, PROP_METRICS, STATE_METRICS, DM_METRICS
 export canonical_metric, metric_label
 export overlap_fidelity, overlap_weight
+# Ensemble averaging (Types/EnsembleAveraging.jl, Computation/EnsembleProbes.jl)
+export EnsembleAveraging, ensemble_members, ENSEMBLE_AGGREGATES,
+       AbstractEnsembleAxis, TermAxis, OffsetAxis, CouplingAxis, DriveScaleAxis,
+       DrivePhaseAxis, TimeScaleAxis, DriftListAxis, FunctionAxis,
+       AbstractProbeSet, StateProbes, OperatorProbes, state_probes, operator_probes,
+       offset_operator, coupling_operator
 # Fidelity metric type hierarchy (type-stable dispatch).  The pre-Φ^X_Y names
 # (RealOverlap, NormalizedGate, REAL_OVERLAP, …) are exported as deprecated
 # bindings from Physics/Objectives.jl.
