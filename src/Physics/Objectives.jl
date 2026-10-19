@@ -815,22 +815,36 @@ end
 """
     shift_system(sys::QuantumSystem, offset_hz::Float64) -> QuantumSystem
 
-Return a copy of `sys` with drift Hamiltonian shifted by 2π*offset_hz (uniform Zeeman offset).
+A bare `QuantumSystem` stores only `H_drift`/`H_controls` and carries no
+spin/detuning (z) operator, so a frequency offset is undefined for it: adding
+`offset·I` would only introduce an unobservable global phase (leaving every
+fidelity unchanged), which is a silent no-op rather than a real detuning.
+Band-selective design therefore requires a spin system type that exposes a z
+operator (`SpinSystem`, `MRSpinSystem`, or `EPRSpinSystem`).
 """
 function shift_system(sys::QuantumSystem, offset_hz::Float64)::QuantumSystem
-    dim = sys.dim
-    H_shifted = sys.H_drift .+ (2π * offset_hz) .* Matrix{ComplexF64}(I, dim, dim)
-    return QuantumSystem(H_shifted, sys.H_controls, dim, sys.n_controls, sys.metadata)
+    throw(ArgumentError(
+        "shift_system is undefined for a bare QuantumSystem: it has no z/detuning " *
+        "operator, so a frequency offset would only add an unobservable global phase. " *
+        "Use a SpinSystem, MRSpinSystem, or EPRSpinSystem for band-selective design."))
 end
 
 """
     shift_system(sys::SpinSystem, offset_hz::Float64) -> SpinSystem
 
-Return a copy of `sys` with uniform frequency offset added to all spins.
+Return a copy of `sys` with a uniform frequency offset added to all spins. The
+offset couples to the total z operator `Σ_i Iz_i` (the same operator the Zeeman
+term `Σ_i 2π·δ_i·Iz_i` uses), NOT to the identity — an identity shift is only a
+global phase and would leave every fidelity unchanged.
 """
 function shift_system(sys::SpinSystem, offset_hz::Float64)::SpinSystem
     dim = sys.dim
-    H_shifted = sys.H_drift .+ (2π * offset_hz) .* Matrix{ComplexF64}(I, dim, dim)
+    # Total z operator Σ_i Iz_i, embedded exactly as in the spin_system builder.
+    Iz_total = zeros(ComplexF64, dim, dim)
+    for i in eachindex(sys.spins)
+        Iz_total .+= embed_operator(spin_Sz(sys.spins[i]), sys.spins, i)
+    end
+    H_shifted = sys.H_drift .+ (2π * offset_hz) .* Iz_total
     return SpinSystem(sys.spins, sys.couplings, sys.chemical_shifts .+ offset_hz,
                       H_shifted, sys.H_controls, dim, sys.n_controls)
 end
