@@ -101,6 +101,24 @@ function SU2Kernel(offsets_hz        :: AbstractVector{<:Real},
     return SU2Kernel(params.alpha, params.betas, AT, BT, metric, N_ens)
 end
 
+"""
+    SU2Kernel(ens::EnsembleAveraging, RF_max_hz, dt, rotation_angle, Theta, Phi_ax;
+              metric = :auto)
+
+The SU(2) kernel over the ensemble `ens`: `OffsetAxis` / `TermAxis` on `Iz` (any
+real multiple; several axes add) and `DriveScaleAxis` (all channels), uniformly
+weighted under `aggregate = :mean` — the offsets × B1 product the kernel averages
+natively. The metric is `ens.metric` (or `metric`; default `:prop_real`).
+Other ensembles throw; evaluate them with `ensemble_averaging`.
+"""
+function SU2Kernel(ens::EnsembleAveraging, RF_max_hz::Real, dt::Real, rotation_angle::Real,
+                   Theta::Real, Phi_ax::Real; metric::Symbol = :auto)
+    offsets, scales = _offset_scale_lists(ens, spin_Sz(0.5), "SU2Kernel")
+    m = _front_end_metric(ens, metric, :prop_real, "SU2Kernel")
+    return SU2Kernel(offsets, RF_max_hz, dt, rotation_angle, Theta, Phi_ax;
+                     amp_factors = scales, metric = m)
+end
+
 # Callable: forward fidelity only
 (k::SU2Kernel)(phi::AbstractVector{Float64}) =
     su2_fidelity_forward(phi, k.alpha, k.betas, k.AT, k.BT; metric=k.metric)

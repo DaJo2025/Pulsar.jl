@@ -465,18 +465,46 @@ println("Fidelity: ", result.fidelity)
 - The gradient is the analytical GRAPE gradient from `compute_grape_gradient`.
 - Callback signature: `callback(iter::Int, F::Float64, gnorm::Float64,
   controls::Matrix{Float64}) -> nothing`.
+- `ensemble = ens` (an [`EnsembleAveraging`](@ref)) optimises the ensemble
+  average `ensemble_averaging(ens, system, controls, target)` instead of the
+  single-system fidelity — offsets, couplings, B1, drive phase, timing, any
+  added term, under any of its aggregators. When the ensemble's probe pairs are
+  the targets, call `grape_optimize(system, ens, controls)`.
 """
 function grape_optimize(
     system::AbstractQuantumSystem,
     target::QuantumTarget,
     controls_init::ControlSequence;
     config::GRAPEConfig = GRAPEConfig(),
+    ensemble::Union{Nothing,EnsembleAveraging} = nothing,
     fidelity_fn::Union{Nothing,Function}              = nothing,
     gradient_fn::Union{Nothing,Function}              = nothing,
     fidelity_and_gradient_fn::Union{Nothing,Function} = nothing,
     penalty_fns::Vector{Function}      = Function[],
     penalty_grad_fns::Vector{Function} = Function[],
 )::OptimizationResult
+
+    # An ensemble average is supplied to the generic hook driver as its fidelity
+    # hooks.
+    if ensemble !== nothing
+        (fidelity_fn === nothing && gradient_fn === nothing &&
+         fidelity_and_gradient_fn === nothing) || throw(ArgumentError(
+            "grape_optimize: `ensemble` defines the fidelity; do not also pass " *
+            "fidelity_fn / gradient_fn / fidelity_and_gradient_fn"))
+        ens_target = if ensemble.probes === nothing
+            target.type in ("unitary", "state") || throw(ArgumentError(
+                "grape_optimize: an ensemble without probe pairs needs a unitary or state target"))
+            target
+        else
+            target.type == "none" || throw(ArgumentError(
+                "grape_optimize: the ensemble's probe pairs are its targets; " *
+                "call grape_optimize(system, ensemble, controls) without a target"))
+            nothing
+        end
+        fidelity_fn = (s, c, _) -> ensemble_averaging(ensemble, s, c, ens_target; gradient = false)
+        gradient_fn = (s, c, _) -> ensemble_averaging(ensemble, s, c, ens_target)[2]
+        fidelity_and_gradient_fn = (s, c, _) -> ensemble_averaging(ensemble, s, c, ens_target)
+    end
 
     # Physics-hook path: when any custom hook/penalty is supplied, dispatch to the
     # generic hook driver.  This typed method is MORE specific than the untyped
@@ -1454,6 +1482,22 @@ function _grape_optimize_hooks(
             "total_time"      => total_time,
         )
     )
+end
+
+"""
+    grape_optimize(system, ensemble::EnsembleAveraging, controls_init; kwargs...)
+
+GRAPE on an ensemble whose probe pairs (`ensemble.probes`) are the targets — e.g.
+`EnsembleAveraging(axes...; probes = state_probes(U_target; set = :axes))`.
+Keywords as for the target form; see `ensemble` there.
+"""
+function grape_optimize(system::AbstractQuantumSystem, ensemble::EnsembleAveraging,
+                        controls_init::ControlSequence; kwargs...)
+    ensemble.probes === nothing && throw(ArgumentError(
+        "grape_optimize(system, ensemble, controls) is for an ensemble with probe pairs; " *
+        "otherwise pass the target: grape_optimize(system, target, controls; ensemble)"))
+    return grape_optimize(system, QuantumTarget("none", nothing, nothing, nothing, 0),
+                          controls_init; ensemble = ensemble, kwargs...)
 end
 
 """

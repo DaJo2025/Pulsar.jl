@@ -66,6 +66,9 @@ end
     section("Optimization – Control Parameterisation (Theme 2)")
     include("Optimization/ParameterizationTests.jl")
 
+    section("Optimization – Ensemble Averaging Front Ends")
+    include("Optimization/EnsembleAveragingFrontEndTests.jl")
+
     section("Runtime – Algorithm Registry (Theme 8)")
     include("Runtime/AlgorithmRegistryTests.jl")
 

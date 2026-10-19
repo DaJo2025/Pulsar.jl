@@ -174,7 +174,25 @@ Keyword constructor for `MRControl` with sensible defaults.
 - `drifts`, `operators` — see struct docs
 - `rho_init`, `rho_targ` — accepts either a single `Vector{ComplexF64}` (wrapped
   automatically) or a `Vector{Vector{ComplexF64}}` for multiple state pairs
+  (may be omitted when `ensemble` carries `StateProbes`)
 - `pwr_levels`, `pulse_dt`
+
+# Ensemble
+`ensemble = EnsembleAveraging(...)` expands into the fields above: each
+`OffsetAxis` / `CouplingAxis` / `TermAxis` multiplies `drifts` (every drift gets
+every added term), a `DriveScaleAxis` multiplies `pwr_levels`, `StateProbes`
+become the state pairs, and a non-`:auto` ensemble metric sets `fidelity`. The
+MR kernels average uniformly over that product, so only uniformly weighted
+`:mean` ensembles of those axes are accepted; anything else throws (use
+`ensemble_averaging` / `grape_optimize(…; ensemble)` on a `QuantumSystem`).
+```julia
+sys  = mr_system("1H")
+ens  = EnsembleAveraging(OffsetAxis(range(-5e3, 5e3, 21); operator = spin_op(sys, :Iz)),
+                         DriveScaleAxis([0.9, 1.0, 1.1]))
+ctrl = MRControl(drifts = [hamiltonian(sys)], operators = [spin_op(sys, :Ix), spin_op(sys, :Iy)],
+                 rho_init = [spin_state(sys, :Iz)], rho_targ = [spin_state(sys, :mIz)],
+                 pwr_levels = [2π * 10e3], pulse_dt = fill(2e-6, 250), ensemble = ens)
+```
 
 # Optional keyword arguments (all have defaults)
 ```julia
@@ -210,8 +228,8 @@ ctrl = MRControl(
 function MRControl(;
     drifts         :: Vector{<:Matrix{<:Number}},
     operators      :: Vector{<:Matrix{<:Number}},
-    rho_init,                                       # flexible: vec or vec-of-vecs
-    rho_targ,
+    rho_init       = nothing,                       # flexible: vec or vec-of-vecs
+    rho_targ       = nothing,
     pwr_levels     :: Vector{Float64},
     pulse_dt       :: Vector{Float64},
     penalties      :: Vector{Symbol}  = [:none],
@@ -221,7 +239,7 @@ function MRControl(;
     method         :: Symbol          = :lbfgs,
     max_iter       :: Int             = 500,
     grad_tol       :: Float64         = 1e-7,
-    fidelity       :: Symbol          = :state_real,
+    fidelity       :: Union{Nothing, Symbol} = nothing,   # nothing → :state_real
     lbfgs_memory   :: Int             = 10,
     verbose        :: Bool            = true,
     print_interval :: Int             = 1,
@@ -230,7 +248,16 @@ function MRControl(;
     callback       :: Union{Nothing, Function} = nothing,
     parameterization :: AbstractControlParameterization = PiecewiseConstant(),
     fast_path      :: Union{Nothing, Bool} = nothing,
+    ensemble       :: Union{Nothing, EnsembleAveraging} = nothing,
 )
+    if ensemble !== nothing
+        drifts, pwr_levels, rho_init, rho_targ, fidelity =
+            _mr_expand_ensemble(ensemble, drifts, pwr_levels, rho_init, rho_targ, fidelity)
+    end
+    fidelity === nothing && (fidelity = :state_real)
+    (rho_init === nothing || rho_targ === nothing) && throw(ArgumentError(
+        "MRControl needs rho_init and rho_targ (or an ensemble whose StateProbes supply them)"))
+
     # Normalise rho_init / rho_targ to Vector{Vector{ComplexF64}}
     _wrap(x::Vector{<:Number})           = [ComplexF64.(x)]
     _wrap(x::Vector{<:AbstractVector})   = [ComplexF64.(v) for v in x]
@@ -266,6 +293,38 @@ function MRControl(;
         parameterization,
         fast_path,
     )
+end
+
+# An EnsembleAveraging in the form MRControl's kernels average natively: an
+# unweighted mean over drifts × pwr_levels × state pairs. Term axes multiply the
+# drift list (each drift gets every added term), drive scales the power levels,
+# StateProbes become the state pairs.
+function _mr_expand_ensemble(ens::EnsembleAveraging, drifts, pwr_levels, rho_init, rho_targ,
+                             fidelity)
+    _require_uniform_mean(ens, (TermAxis, DriveScaleAxis), "MRControl")
+    D = [Matrix{ComplexF64}(H) for H in drifts]
+    for a in ens.axes
+        if a isa TermAxis
+            all(size(a.operator) == size(H) for H in D) || throw(DimensionMismatch(
+                "MRControl: $(a.label) operator $(size(a.operator)) ≠ drift $(size(D[1]))"))
+            D = [H .+ (2π * v) .* a.operator for v in a.values for H in D]
+        else
+            a.channels === :all || throw(ArgumentError(
+                "MRControl scales the whole RF field: DriveScaleAxis channels must be :all"))
+            pwr_levels = [p * v for v in a.values for p in pwr_levels]
+        end
+    end
+    if ens.probes !== nothing
+        ens.probes isa StateProbes || throw(ArgumentError(
+            "MRControl propagates state vectors; OperatorProbes need LindbladMRControl " *
+            "or ensemble_averaging"))
+        (rho_init === nothing && rho_targ === nothing) || throw(ArgumentError(
+            "MRControl: the ensemble's StateProbes are the state pairs; do not also pass " *
+            "rho_init / rho_targ"))
+        rho_init, rho_targ = ens.probes.inputs, ens.probes.targets
+    end
+    fidelity = _front_end_metric(ens, fidelity, :state_real, "MRControl")
+    return D, pwr_levels, rho_init, rho_targ, fidelity
 end
 
 # ─── optimcon ─────────────────────────────────────────────────────────────────

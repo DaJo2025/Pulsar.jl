@@ -182,6 +182,7 @@ include("Optimization/Invariants.jl")
 # delegates through this core below.
 include("Optimization/Ensemble/EnsembleObjective.jl")
 include("Optimization/Ensemble/SystemBuilder.jl")
+include("Optimization/Ensemble/AveragingObjective.jl")   # EnsembleAveraging → EnsembleObjective
 
 # Control parameterisation hierarchy (Theme 2)
 include("Optimization/Parameterization.jl")
@@ -523,6 +524,7 @@ export EnsembleObjective
 export ensemble_value, ensemble_value_and_grad
 export ensemble_wrap, ensemble_wrap_fonly, ensemble_wrap_ascent
 export build_ensemble_from_systems, build_ensemble_from_perturbations
+export ensemble_objective
 export build_ensemble_from_mrcontrol
 
 # Per-sample MR kernels (back the :worst_case / :cvar aggregators)

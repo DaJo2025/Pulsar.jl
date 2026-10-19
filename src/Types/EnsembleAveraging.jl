@@ -263,7 +263,8 @@ const ENSEMBLE_AGGREGATES = (:mean, :sum, :worst_case, :cvar, :softmin)
 
 """
     EnsembleAveraging(axes...; probes = nothing, combine = :product,
-                      aggregate = :mean, cvar_alpha = 0.2, softmin_beta = 50.0)
+                      aggregate = :mean, metric = :auto,
+                      cvar_alpha = 0.2, softmin_beta = 50.0)
 
 An ensemble average over `axes` (see [`AbstractEnsembleAxis`](@ref)) and an
 optional input-state axis `probes` (an [`AbstractProbeSet`](@ref)). Evaluate it
@@ -277,18 +278,29 @@ with `ensemble_averaging(ens, system, controls, target)`.
   (signed weights: band-selective pass / stop bands); `:worst_case` min F_k;
   `:cvar` the weighted mean of the worst `cvar_alpha` fraction of weight;
   `:softmin` −log(Σ ω̂_k e^{−β F_k})/β, a smooth worst case (β = `softmin_beta`).
+- `metric` — the Φ^X_Y fidelity of one member (see `FIDELITY_METRICS`).
+  `:auto` takes the target's metric, or `:state_squared` for `StateProbes` and
+  `:dm_real` for `OperatorProbes`.
 - Within a member the probe pairs are averaged with their own weights.
+
+Front ends: `grape_optimize(system, target, controls; ensemble)` (or
+`grape_optimize(system, ens, controls)` when the probes are the targets),
+`ensemble_objective` for any optimiser, and — for the uniform means their
+kernels compute — `MRControl(…; ensemble)`, `SU2Kernel(ens, …)`,
+`SpinIKernel(ens, …)`.
 """
 struct EnsembleAveraging
     axes         :: Vector{AbstractEnsembleAxis}
     probes       :: Union{Nothing, AbstractProbeSet}
     combine      :: Symbol
     aggregate    :: Symbol
+    metric       :: Symbol
     cvar_alpha   :: Float64
     softmin_beta :: Float64
     function EnsembleAveraging(axes::AbstractEnsembleAxis...;
                                probes::Union{Nothing, AbstractProbeSet} = nothing,
                                combine::Symbol = :product, aggregate::Symbol = :mean,
+                               metric::Symbol = :auto,
                                cvar_alpha::Real = 0.2, softmin_beta::Real = 50.0)
         combine in (:product, :zip) ||
             throw(ArgumentError("combine must be :product or :zip (got :$combine)"))
@@ -296,13 +308,14 @@ struct EnsembleAveraging
             throw(ArgumentError("aggregate must be one of $(ENSEMBLE_AGGREGATES) (got :$aggregate)"))
         0 < cvar_alpha <= 1 || throw(ArgumentError("cvar_alpha must be in (0, 1]"))
         softmin_beta > 0 || throw(ArgumentError("softmin_beta must be positive"))
+        m = canonical_metric(metric, (:auto, FIDELITY_METRICS...); context = "EnsembleAveraging")
         ax = AbstractEnsembleAxis[axes...]
         if combine === :zip && !isempty(ax)
             n = _axis_length(ax[1])
             all(_axis_length(a) == n for a in ax) ||
                 throw(ArgumentError("combine = :zip needs axes of equal length"))
         end
-        new(ax, probes, combine, aggregate, Float64(cvar_alpha), Float64(softmin_beta))
+        new(ax, probes, combine, aggregate, m, Float64(cvar_alpha), Float64(softmin_beta))
     end
 end
 
@@ -331,5 +344,71 @@ function Base.show(io::IO, ens::EnsembleAveraging)
     print(io, "EnsembleAveraging(", length(ens), " members over ",
           isempty(ens.axes) ? "no axes" : join((nameof(typeof(a)) for a in ens.axes), " × "),
           ens.probes === nothing ? "" : " × $(length(ens.probes.inputs)) probe pairs",
-          "; aggregate = :", ens.aggregate, ")")
+          "; aggregate = :", ens.aggregate,
+          ens.metric === :auto ? "" : ", metric = :$(ens.metric)", ")")
+end
+
+# ─── Front-end check ──────────────────────────────────────────────────────────
+#
+# Kernels with a built-in ensemble (MRControl: drifts × pwr_levels × state
+# pairs; SU2 / spin-I: offsets × amp_factors) compute an UNWEIGHTED mean over a
+# full product. An EnsembleAveraging maps onto them only if it is one; anything
+# else is refused rather than approximated.
+
+_uniform_weights(w) = all(x -> isapprox(x, w[1]; rtol = 1e-12), w)
+
+function _require_uniform_mean(ens::EnsembleAveraging, allowed::Tuple, context::AbstractString)
+    hint = ". Evaluate other ensembles with ensemble_averaging, or optimise them with " *
+           "grape_optimize(system, target, controls; ensemble) / ensemble_objective."
+    ens.aggregate === :mean || throw(ArgumentError(
+        "$context averages uniformly: aggregate must be :mean (got :$(ens.aggregate))$hint"))
+    (ens.combine === :product || length(ens.axes) <= 1) || throw(ArgumentError(
+        "$context averages over a full product of its axes: combine must be :product$hint"))
+    for a in ens.axes
+        any(T -> a isa T, allowed) || throw(ArgumentError(
+            "$context cannot represent a $(nameof(typeof(a))) " *
+            "(it takes $(join(map(nameof, allowed), ", ")))$hint"))
+        _uniform_weights(a.weights) || throw(ArgumentError(
+            "$context averages uniformly, but a $(nameof(typeof(a))) has non-uniform weights$hint"))
+    end
+    ens.probes === nothing || _uniform_weights(ens.probes.weights) || throw(ArgumentError(
+        "$context averages its state pairs uniformly, but the probe weights are not uniform$hint"))
+    return nothing
+end
+
+# The metric a front end uses: the ensemble's unless it is :auto; a different
+# explicit `metric` argument is a conflict, not an override.
+function _front_end_metric(ens::EnsembleAveraging, metric, default::Symbol, context)
+    explicit = !(metric === nothing || metric === :auto)
+    ens.metric === :auto && return explicit ? metric : default
+    (!explicit || metric === ens.metric) || throw(ArgumentError(
+        "$context: the ensemble's metric :$(ens.metric) conflicts with metric = :$metric"))
+    return ens.metric
+end
+
+# Offsets (Hz) and drive-scale factors of an offsets × B1 ensemble whose offset
+# terms are real multiples of `Iz` — the ensemble the SU(2) and spin-I kernels
+# average natively. `scales === nothing` when there is no DriveScaleAxis.
+function _offset_scale_lists(ens::EnsembleAveraging, Iz::AbstractMatrix, context::AbstractString)
+    _require_uniform_mean(ens, (TermAxis, DriveScaleAxis), context)
+    ens.probes === nothing || throw(ArgumentError(
+        "$context has its own input state / target; probe pairs are not supported " *
+        "(use ensemble_averaging on a QuantumSystem)"))
+    offsets = [0.0]
+    scales  = nothing
+    for a in ens.axes
+        if a isa TermAxis
+            size(a.operator) == size(Iz) || throw(DimensionMismatch(
+                "$context: offset operator $(size(a.operator)) ≠ spin dimension $(size(Iz))"))
+            c = real(a.operator[1, 1]) / real(Iz[1, 1])
+            isapprox(a.operator, c .* Iz; atol = 1e-12 * max(1, abs(c))) || throw(ArgumentError(
+                "$context: an offset axis must couple to Iz (operator = c·Iz)"))
+            offsets = [o + c * v for v in a.values for o in offsets]
+        else
+            a.channels === :all || throw(ArgumentError(
+                "$context scales the whole RF field: DriveScaleAxis channels must be :all"))
+            scales = scales === nothing ? copy(a.values) : [s * v for v in a.values for s in scales]
+        end
+    end
+    return offsets, scales
 end

@@ -215,13 +215,15 @@ axes applied; each member's fidelity is
   over pairs of `metric` — `:state_squared` by default for `StateProbes`
   (state or, on the pure states, DM row), `:dm_real` for `OperatorProbes`.
 
+`metric` defaults to `ens.metric` (`:auto` = the defaults above).
+
 The member fidelities are combined by `ens.aggregate`. `G` is ∂F/∂controls in
 the `[n_controls × n_timesteps]` layout of `compute_grape_gradient` (first-order
 GRAPE, as there). Members run in parallel threads.
 """
 function ensemble_averaging(ens::EnsembleAveraging, system,
                             controls::ControlSequence, target = nothing;
-                            metric::Symbol = :auto, gradient::Bool = true)
+                            metric::Symbol = ens.metric, gradient::Bool = true)
     (hasproperty(system, :H_drift) && hasproperty(system, :H_controls)) || throw(ArgumentError(
         "ensemble_averaging: $(typeof(system)) has no H_drift / H_controls; " *
         "build the ensemble on a QuantumSystem, or use the MR front ends (MRControl(…; ensemble))"))

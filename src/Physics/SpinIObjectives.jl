@@ -82,6 +82,20 @@ function SpinIKernel(offsets_hz  :: AbstractVector{<:Real},
     return SpinIKernel(Dk, m_vals, target, metric, dim, N_ens)
 end
 
+"""
+    SpinIKernel(ens::EnsembleAveraging, RF_max_hz, dt, spin_I, target; metric = :auto)
+
+The spin-I kernel over the ensemble `ens`: offsets on `Iz` of spin `spin_I` and
+B1 scales, uniformly weighted under `aggregate = :mean` (see the `SU2Kernel`
+method). The metric is `ens.metric` (or `metric`; default `:state_squared`).
+"""
+function SpinIKernel(ens::EnsembleAveraging, RF_max_hz::Real, dt::Real, spin_I::Real,
+                     target; metric::Symbol = :auto)
+    offsets, scales = _offset_scale_lists(ens, spin_Sz(spin_I), "SpinIKernel")
+    m = _front_end_metric(ens, metric, :state_squared, "SpinIKernel")
+    return SpinIKernel(offsets, RF_max_hz, dt, spin_I, target; amp_factors = scales, metric = m)
+end
+
 # Callable: forward fidelity only
 (k::SpinIKernel)(phi::AbstractVector{Float64}) =
     spinI_fidelity_forward(phi, k.Dk_matrices, k.target, k.m_values; metric=k.metric)
