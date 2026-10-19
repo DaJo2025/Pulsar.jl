@@ -18,7 +18,6 @@ using Pulsar
 using LinearAlgebra
 using Random
 using Statistics
-using Logging
 
 @testset "Ensemble averaging" begin
 
@@ -34,7 +33,9 @@ using Logging
         return g
     end
     relerr(G, Gref) = maximum(abs.(G .- Gref)) / max(maximum(abs, Gref), 1e-14)
-    quiet(f) = with_logger(f, NullLogger())       # :basis probes warn (maxlog = 1)
+    # :basis probes warn (maxlog = 1). Base.CoreLogging is what Logging
+    # re-exports — Logging itself is not a test dependency.
+    quiet(f) = Base.CoreLogging.with_logger(f, Base.CoreLogging.NullLogger())
 
     rand_unitary(rng, d) = (Q = qr(randn(rng, ComplexF64, d, d)).Q; Matrix{ComplexF64}(Q))
     rand_herm(rng, d)    = (A = randn(rng, ComplexF64, d, d); (A + A') / 2)
