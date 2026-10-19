@@ -111,7 +111,7 @@ spin-1/2 particles using the Strang-split Trotter approximation.
 - `tp`       : NamedTuple from `precompute_trotter_params`
 - `psi_init` : `Vector{ComplexF64}` — initial state in 2^n_spins dim space
 - `psi_targ` : `Vector{ComplexF64}` — target state
-- `metric`   : `:state_squared` (Φ^S_Q, ensemble state-transfer fidelity; only option currently)
+- `metric`   : `:state_squared` (Φ^S_Q, default), `:state_real` or `:state_modulus`
 - `n_spins`  : number of spin-1/2 particles
 - `dim`      : `2^n_spins`
 - `N_ens`    : ensemble size (number of drift Hamiltonians)
@@ -162,7 +162,7 @@ function TrotterKernel(drifts            :: AbstractVector,
                         psi_targ          :: AbstractVector{<:Number};
                         metric            :: Symbol = :state_squared)
 
-    metric = canonical_metric(metric, (:state_squared,); context = "TrotterKernel")
+    metric = canonical_metric(metric, TROTTER_METRICS; context = "TrotterKernel")
     tp    = precompute_trotter_params(drifts, Omega_RF_per_spin, dt, n_spins)
     N_ens = length(drifts)
     dim   = 2^n_spins

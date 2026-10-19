@@ -227,13 +227,17 @@ end
 # Fidelity + gradient (exact adjoint of merged Strang Trotter)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Metrics the Trotter kernel implements: the state row of z_k = ⟨ψ_targ|U_k(T)|ψ_init⟩.
+const TROTTER_METRICS = (:state_squared, :state_real, :state_modulus)
+
 """
     trotter_fidelity_gradient(phi, tp, psi_init, psi_targ; metric=:state_squared) → (F, GJ)
 
 Strang-Trotter ensemble fidelity and exact adjoint gradient w.r.t. `phi`.
 
-`metric=:state_squared` (Φ^S_Q, the only supported option) computes ensemble
-state-transfer fidelity:
+`metric` is a state-row metric — `:state_squared` (Φ^S_Q, default),
+`:state_real` or `:state_modulus` of `z_k = ⟨ψ_targ|U_k(T)|ψ_init⟩`; for the
+default it computes the ensemble state-transfer fidelity:
 ```
 F = (1/N_ens) Σ_k |⟨ψ_targ | U_k(T) | ψ_init⟩|²
 ```
@@ -247,7 +251,7 @@ function trotter_fidelity_gradient(phi      :: AbstractVector{Float64},
                                    psi_init :: AbstractVector{ComplexF64},
                                    psi_targ :: AbstractVector{ComplexF64};
                                    metric   :: Symbol = :state_squared)
-    canonical_metric(metric, (:state_squared,); context = "trotter_fidelity_gradient")
+    metric = canonical_metric(metric, TROTTER_METRICS; context = "trotter_fidelity_gradient")
 
     N_TS    = length(phi)
     N_ens   = length(tp.U_drift_halves)
@@ -266,13 +270,22 @@ function trotter_fidelity_gradient(phi      :: AbstractVector{Float64},
         mul!(ψ_fin_k, tp.U_drift_halves[k], @view(Psi_post[k, :, N_TS]))
         z[k] = dot(psi_targ, ψ_fin_k)
     end
-    F = sum(abs2, z) / N_ens_f
+    F = sum(overlap_fidelity.(metric, z)) / N_ens_f
 
     # ── Initialize co-states: χ_k = U_d2† · μ_k ─────────────────────────────
+    # μ_k = +conj(w_k)/N · ψ_targ with the chain weight w_k of z_k (dF = Re(w·dz)).
+    # The sign is + here (− in the spin-I kernel) because this kernel's control
+    # step is e^{−iφIz}·D·e^{+iφIz} — the standard RF-phase convention, as in
+    # SU(2) — while the term2 − term1 sweep below has the spin-I layout, whose
+    # step is e^{+iφIz}·D·e^{−iφIz}; dU/dφ flips sign between the two.
+    # This used to read −conj(z_k)/N · ψ_targ for |z|² — wrong sign, conjugated
+    # the wrong way and missing the factor 2 of w = 2z̄ — so the gradient
+    # disagreed with finite differences.
     Chi  = zeros(ComplexF64, N_ens, dim)
     μ_k  = zeros(ComplexF64, dim)
     for k in 1:N_ens
-        @. μ_k = -(conj(z[k]) / N_ens_f) * psi_targ
+        cw = conj(overlap_weight(metric, z[k]))
+        @. μ_k = (cw / N_ens_f) * psi_targ
         mul!(@view(Chi[k, :]), tp.U_drift_halves[k]', μ_k)
     end
 
@@ -338,7 +351,7 @@ function trotter_fidelity_forward(phi      :: AbstractVector{Float64},
                                   psi_init :: AbstractVector{ComplexF64},
                                   psi_targ :: AbstractVector{ComplexF64};
                                   metric   :: Symbol = :state_squared)
-    canonical_metric(metric, (:state_squared,); context = "trotter_fidelity_forward")
+    metric = canonical_metric(metric, TROTTER_METRICS; context = "trotter_fidelity_forward")
 
     N_TS    = length(phi)
     N_ens   = length(tp.U_drift_halves)
@@ -365,7 +378,7 @@ function trotter_fidelity_forward(phi      :: AbstractVector{Float64},
             end
         end
 
-        F += abs2(dot(psi_targ, ψ))
+        F += overlap_fidelity(metric, dot(psi_targ, ψ))
     end
 
     return F / N_ens_f
