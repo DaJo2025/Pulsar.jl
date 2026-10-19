@@ -208,8 +208,10 @@ function transmon_system(freq_hz     :: Vector{Float64},
     n_comp = 2^nq
     leakage_indices = Int[]
     for idx in 1:dim
-        digits = reverse(digits(idx - 1; base=nl, pad=nq))
-        any(d >= 2 for d in digits) && push!(leakage_indices, idx)
+        # (named `levels`: assigning to `digits` here made it a local, so the
+        # call on the right threw UndefVarError and transmon_system never ran)
+        levels = digits(idx - 1; base=nl, pad=nq)
+        any(d >= 2 for d in levels) && push!(leakage_indices, idx)
     end
 
     TransmonSystem(
