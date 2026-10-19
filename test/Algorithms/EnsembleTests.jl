@@ -154,7 +154,7 @@ end
         rho_targ   = [spin_state(sys, :mIy)],
         pwr_levels = [2π * 10_000.0],
         pulse_dt   = fill(5e-6, N_TS),
-        fidelity   = :square,
+        fidelity   = :state_squared,
         verbose    = false,
     )
 

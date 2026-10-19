@@ -396,9 +396,9 @@ const _I2  = ComplexF64[1 0; 0 1]
         tol = 1e-5
 
         # State metrics
-        for (name, metric) in [("ModulusDM", MODULUS_DM),
-                                ("SquaredDM", SQUARED_DM),
-                                ("LinearDM",  LINEAR_DM)]
+        for (name, metric) in [("DMModulus", DM_MODULUS),
+                                ("DMSquared", DM_SQUARED),
+                                ("DMReal",    DM_REAL)]
             G_a = Pulsar.compute_gradient_state(Utot, P, Q, H_c, ψ_i, ψ_t, dt, metric)
             G_n = _fd(uu -> _fid_state(uu, metric), u)
             err = maximum(abs.(G_a .- G_n)) / max(1, maximum(abs.(G_n)))
@@ -406,17 +406,17 @@ const _I2  = ComplexF64[1 0; 0 1]
         end
 
         # Gate metric
-        G_a = Pulsar.compute_gradient_gate(Utot, P, Q, H_c, U_T, dt, MODULUS_GATE)
-        G_n = _fd(uu -> _fid_gate(uu, MODULUS_GATE), u)
+        G_a = Pulsar.compute_gradient_gate(Utot, P, Q, H_c, U_T, dt, PROP_MODULUS)
+        G_n = _fd(uu -> _fid_gate(uu, PROP_MODULUS), u)
         err = maximum(abs.(G_a .- G_n)) / max(1, maximum(abs.(G_n)))
         @test err < tol
 
         # Metric-aware path reproduces hard-coded path for existing metrics.
-        G1 = Pulsar.compute_gradient_state(Utot, P, Q, H_c, ψ_i, ψ_t, dt, SQUARED_OVERLAP)
+        G1 = Pulsar.compute_gradient_state(Utot, P, Q, H_c, ψ_i, ψ_t, dt, STATE_SQUARED)
         G2 = Pulsar.compute_gradient_state(Utot, P, Q, H_c, ψ_i, ψ_t, dt)
         @test maximum(abs.(G1 .- G2)) < 1e-12
 
-        G1 = Pulsar.compute_gradient_gate(Utot, P, Q, H_c, U_T, dt, NORMALIZED_GATE)
+        G1 = Pulsar.compute_gradient_gate(Utot, P, Q, H_c, U_T, dt, PROP_SQUARED)
         G2 = Pulsar.compute_gradient_gate(Utot, P, Q, H_c, U_T, dt)
         @test maximum(abs.(G1 .- G2)) < 1e-12
 

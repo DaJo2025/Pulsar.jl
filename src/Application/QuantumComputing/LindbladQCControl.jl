@@ -245,7 +245,7 @@ function Base.getproperty(a::_LindbladQCAdapter, name::Symbol)
     elseif name === :precision
         return :f64
     elseif name === :fidelity
-        return :square
+        return :dm_squared
     elseif name === :_L_drifts
         return [qc._L_drift]
     elseif name === :pwr_levels

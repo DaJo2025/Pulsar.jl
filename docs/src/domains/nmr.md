@@ -134,7 +134,7 @@ ctrl = MRControl(
     pulse_dt   = fill(1e-6, 200),                # 200 × 1 µs slices
     method     = :lbfgs,
     max_iter   = 500,
-    fidelity   = :square,
+    fidelity   = :state_squared,                 # Φ^S_Q, |⟨ψ1|ψ(T)⟩|²
     verbose    = false,
 )
 
@@ -144,8 +144,9 @@ result = optimcon(ctrl, guess)
 
 `drifts` is a *vector* of Hamiltonians: a single entry runs nominal GRAPE,
 multiple entries form an ensemble (broadband/robust optimisation). The
-`fidelity` keyword takes a metric symbol — `:square`, `:real`, `:modulus`,
-`:dm_uhlmann`, `:dm_linear`, `:normalized`, `:average`. `method` chooses
+`fidelity` keyword takes a state-level metric — `:state_real` (Φ^S_R, the
+default), `:state_modulus` (Φ^S_M) or `:state_squared` (Φ^S_Q); see
+[Fidelity metrics](../theory/fidelity.md). `method` chooses
 the inner gradient algorithm — `:lbfgs`, `:lbfgs_b`, `:bfgs`, `:gd`,
 `:cg`, `:nelder_mead`, `:adam`.
 
@@ -176,7 +177,7 @@ ctrl_L = LindbladMRControl(
     pulse_dt    = fill(1e-6, 200),
     method      = :lbfgs,
     max_iter    = 500,
-    fidelity    = :dm_linear,                    # density-matrix metric
+    fidelity    = :dm_squared,                   # Φ^D_Q (or :dm_real, Φ^D_R)
     verbose     = false,
 )
 

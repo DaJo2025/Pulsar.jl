@@ -456,14 +456,19 @@ export state_transfer_fidelity, state_transfer_fidelity_unnormalized
 export ensemble_fidelity, infidelity
 export fidelity_grad_prefactor
 export STATE_FIDELITY_TYPES, GATE_FIDELITY_TYPES
-# Fidelity metric type hierarchy (type-stable dispatch)
+# Fidelity metric names — the Φ^X_Y grid (level P/S/D × reduction R/M/Q)
+export FIDELITY_METRICS, PROP_METRICS, STATE_METRICS, DM_METRICS
+export canonical_metric, metric_label
+# Fidelity metric type hierarchy (type-stable dispatch).  The pre-Φ^X_Y names
+# (RealOverlap, NormalizedGate, REAL_OVERLAP, …) are exported as deprecated
+# bindings from Physics/Objectives.jl.
 export AbstractFidelityMetric
-export RealOverlap, SquaredOverlap, ModulusOverlap, UhlmannFidelity, LinearDMFidelity
-export NormalizedGate, RealGate, AverageGate
-export ModulusGate, SquaredDMFidelity, ModulusDMFidelity
-export REAL_OVERLAP, SQUARED_OVERLAP, MODULUS_OVERLAP, UHLMANN_FIDELITY, LINEAR_DM
-export NORMALIZED_GATE, REAL_GATE, AVERAGE_GATE
-export MODULUS_GATE, SQUARED_DM, MODULUS_DM
+export PropReal, PropModulus, PropSquared, PropAverage
+export StateReal, StateModulus, StateSquared
+export DMReal, DMModulus, DMSquared, DMUhlmann
+export PROP_REAL, PROP_MODULUS, PROP_SQUARED, PROP_AVERAGE
+export STATE_REAL, STATE_MODULUS, STATE_SQUARED
+export DM_REAL, DM_MODULUS, DM_SQUARED, DM_UHLMANN
 # Theme 4 — extended fidelity metrics
 export EssentialSubspaceGate, CooperativeTargetFidelity, ProcessTomographyFidelity
 export cooperative_fidelity

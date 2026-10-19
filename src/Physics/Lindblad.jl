@@ -207,27 +207,28 @@ Chain-rule coefficient ∂F/∂w[k,n] for the Lindblad GRAPE adjoint method.
 - `z`      — complex Hilbert-Schmidt overlap ⟨σ_targ | σ(T)⟩
 - `inner`  — ⟨λ[n+1] | 𝓛_ctrl[k] | σ[n]⟩  (Liouville space inner product)
 - `dt_pwr` — dt[n] × pwr_level (s × rad/s = dimensionless)
-- `type`   — `:real` or `:square`
+- `type`   — `:dm_real` (Φ^D_R) or `:dm_squared` (Φ^D_Q)
 
 Note: Unlike the Hilbert-space `fidelity_grad_prefactor`, this uses **Re()**
 because the −i factor is already embedded inside 𝓛_ctrl = −i(commutator).
 
-| `type`    | Formula                            |
-|:--------- |:---------------------------------- |
-| `:real`   | `dt_pwr · Re(inner)`               |
-| `:square` | `2 · dt_pwr · Re(conj(z) · inner)` |
+| `type`        | Formula                            |
+|:------------- |:---------------------------------- |
+| `:dm_real`    | `dt_pwr · Re(inner)`               |
+| `:dm_squared` | `2 · dt_pwr · Re(conj(z) · inner)` |
 """
 @inline function lindblad_grad_prefactor(z::ComplexF64,
                                           inner::ComplexF64,
                                           dt_pwr::Float64;
                                           type::Symbol)::Float64
-    if type == :square
+    if type === :dm_squared
         return 2.0 * dt_pwr * real(conj(z) * inner)
-    elseif type == :real
+    elseif type === :dm_real
         return dt_pwr * real(inner)
     else
-        throw(ArgumentError(
-            "lindblad_grad_prefactor: ':$type' not supported. Use :square or :real."))
+        return lindblad_grad_prefactor(z, inner, dt_pwr;
+            type = canonical_metric(type, (:dm_real, :dm_squared);
+                                    context = "lindblad_grad_prefactor"))
     end
 end
 

@@ -13,6 +13,17 @@ dm_fidelity
 compute_fidelity
 fidelity_grad_prefactor
 AbstractFidelityMetric
+PropReal
+PropModulus
+PropSquared
+PropAverage
+StateReal
+StateModulus
+StateSquared
+DMReal
+DMModulus
+DMSquared
+DMUhlmann
 ```
 
 ## Penalties

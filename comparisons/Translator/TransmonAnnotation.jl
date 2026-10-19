@@ -218,7 +218,7 @@ function build_ctrl_from_transmon(ann::TransmonAnnotation; kwargs...)
         pulse_dt   = fill(ann.dt_s, ann.n_time_steps),
         method     = ann.method,
         max_iter   = ann.max_iter,
-        fidelity   = :square,
+        fidelity   = :state_squared,
         verbose    = false;
         kwargs...,
     )

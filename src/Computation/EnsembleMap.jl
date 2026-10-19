@@ -11,7 +11,7 @@
 #       for k in 1:N_ts
 #           ψ = compute_propagator(H0 + pwr*(w[1,k]*Lx + w[2,k]*Ly), dt) * ψ
 #       end
-#       state_fidelity(ρtg, ψ; type=:real)
+#       state_fidelity(ρtg, ψ; type=:state_real)
 #   end
 #   return -sum(F_parts) / length(F_parts)
 # ============================================================================
@@ -356,7 +356,7 @@ function nmr_obj(θ)
         for k in 1:N_ts
             ψ = compute_propagator(H0 + pwr*(w[1,k]*Lx + w[2,k]*Ly), dt) * ψ
         end
-        state_fidelity(ρtg, ψ; type=:real)
+        state_fidelity(ρtg, ψ; type=:state_real)
     end
     return -sum(F_parts) / length(F_parts)
 end

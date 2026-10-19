@@ -24,9 +24,9 @@ propagators D_k and the target specification; everything needed by the optimiser
 ## Fields
 - `Dk_matrices` : `Array{ComplexF64,3}` of shape `[N_ens, dim, dim]`
 - `m_values`    : `Vector{Float64}` of length `dim = 2I+1` — Iz eigenvalues
-- `target`      : for `:state` — `(; psi_init, psi_targ)` NamedTuple;
-                  for `:real_trace` — `Matrix{ComplexF64}` (dim × dim)
-- `metric`      : `:state` or `:real_trace`
+- `target`      : for `:state_squared` — `(; psi_init, psi_targ)` NamedTuple;
+                  for `:prop_real` — `Matrix{ComplexF64}` (dim × dim)
+- `metric`      : `:state_squared` (Φ^S_Q) or `:prop_real` (Φ^P_R)
 - `dim`         : `2I+1`
 - `N_ens`       : ensemble size
 
@@ -37,16 +37,16 @@ Use `spinI_fidelity_and_grad(kernel, phi)` for `(F, GJ)`.
 ## Constructor
 ```julia
 SpinIKernel(offsets_hz, RF_max_hz, dt, spin_I, target;
-            amp_factors=nothing, metric=:state)
+            amp_factors=nothing, metric=:state_squared)
 ```
 - `offsets_hz`  : resonance offsets in Hz
 - `RF_max_hz`   : constant peak RF amplitude in Hz
 - `dt`          : time step in seconds
 - `spin_I`      : spin quantum number (0.5, 1.0, 1.5, …)
 - `target`      : for `:state` — `(psi_init=..., psi_targ=...)`;
-                  for `:real_trace` — `Matrix{ComplexF64}` unitary target
+                  for `:prop_real` — `Matrix{ComplexF64}` unitary target
 - `amp_factors` : optional B1 scale factors for robustness
-- `metric`      : `:state` (default) or `:real_trace`
+- `metric`      : `:state_squared` (default) or `:prop_real`
 """
 struct SpinIKernel
     Dk_matrices :: Array{ComplexF64,3}
@@ -63,8 +63,9 @@ function SpinIKernel(offsets_hz  :: AbstractVector{<:Real},
                      spin_I      :: Real,
                      target;
                      amp_factors :: Union{Nothing,AbstractVector{<:Real}} = nothing,
-                     metric      :: Symbol = :state)
+                     metric      :: Symbol = :state_squared)
 
+    metric      = _spinI_metric(metric)
     offsets_rad = 2π .* offsets_hz
     RF_max_rad  = 2π * RF_max_hz
 
@@ -110,7 +111,7 @@ spin-1/2 particles using the Strang-split Trotter approximation.
 - `tp`       : NamedTuple from `precompute_trotter_params`
 - `psi_init` : `Vector{ComplexF64}` — initial state in 2^n_spins dim space
 - `psi_targ` : `Vector{ComplexF64}` — target state
-- `metric`   : `:state` (ensemble state-transfer fidelity; only option currently)
+- `metric`   : `:state_squared` (Φ^S_Q, ensemble state-transfer fidelity; only option currently)
 - `n_spins`  : number of spin-1/2 particles
 - `dim`      : `2^n_spins`
 - `N_ens`    : ensemble size (number of drift Hamiltonians)
@@ -122,7 +123,7 @@ Use `trotter_fidelity_and_grad(kernel, phi)` for `(F, GJ)`.
 ## Constructor
 ```julia
 TrotterKernel(drifts, Omega_RF_per_spin, dt, n_spins, psi_init, psi_targ;
-              metric=:state)
+              metric=:state_squared)
 ```
 - `drifts`            : `Vector{Matrix}` of length N_ens — drift Hamiltonians (rad/s)
 - `Omega_RF_per_spin` : `Vector{Float64}` of length n_spins — peak Rabi per spin (rad/s)
@@ -159,8 +160,9 @@ function TrotterKernel(drifts            :: AbstractVector,
                         n_spins           :: Int,
                         psi_init          :: AbstractVector{<:Number},
                         psi_targ          :: AbstractVector{<:Number};
-                        metric            :: Symbol = :state)
+                        metric            :: Symbol = :state_squared)
 
+    metric = canonical_metric(metric, (:state_squared,); context = "TrotterKernel")
     tp    = precompute_trotter_params(drifts, Omega_RF_per_spin, dt, n_spins)
     N_ens = length(drifts)
     dim   = 2^n_spins

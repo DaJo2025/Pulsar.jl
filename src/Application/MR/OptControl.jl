@@ -84,8 +84,10 @@ bundled in a single struct.
 - `max_iter::Int`      — maximum iterations (default 500).
 - `grad_tol::Float64`  — gradient norm convergence threshold (default 1e-7).
   L-BFGS stops early when the normalised gradient norm drops below this value.
-- `fidelity::Symbol`   — state fidelity type passed to [`state_fidelity`](@ref).
-  Default `:real`. GRAPE-compatible types: `:real`, `:square`, `:modulus`.
+- `fidelity::Symbol`   — state-level fidelity metric passed to
+  [`state_fidelity`](@ref): `:state_real` (Φ^S_R, default), `:state_modulus`
+  (Φ^S_M) or `:state_squared` (Φ^S_Q).  `MRControl` propagates state vectors,
+  so density-matrix metrics need `LindbladMRControl`.
 - `lbfgs_memory::Int`  — L-BFGS history pairs (default 10).
 
 ## Fields — output
@@ -183,7 +185,7 @@ u_bound        = +1.0
 method         = :lbfgs
 max_iter       = 500
 grad_tol       = 1e-7
-fidelity       = :real
+fidelity       = :state_real
 lbfgs_memory   = 10
 verbose        = true
 print_interval = 1
@@ -219,7 +221,7 @@ function MRControl(;
     method         :: Symbol          = :lbfgs,
     max_iter       :: Int             = 500,
     grad_tol       :: Float64         = 1e-7,
-    fidelity       :: Symbol          = :real,
+    fidelity       :: Symbol          = :state_real,
     lbfgs_memory   :: Int             = 10,
     verbose        :: Bool            = true,
     print_interval :: Int             = 1,
@@ -243,6 +245,7 @@ function MRControl(;
 
     backend ∈ (:cpu, :metal, :cuda) ||
         throw(ArgumentError("backend must be :cpu, :metal, or :cuda (got :$backend)"))
+    fidelity = canonical_metric(fidelity, STATE_METRICS; context = "MRControl")
 
     # Normalise tracking to Vector{TrackingPoint}
     ck = tracking isa Vector{TrackingPoint} ? tracking :
@@ -651,11 +654,10 @@ function _validate_mr_control(ctrl::MRControl, guess::Matrix{Float64})
                                 "expected $dim"))
     end
 
-    _grape_fid_types = (:real, :square, :modulus)
-    ctrl.fidelity ∈ _grape_fid_types ||
+    ctrl.fidelity ∈ STATE_METRICS ||
         throw(ArgumentError(
-            "ctrl.fidelity ':$(ctrl.fidelity)' is not GRAPE-compatible. " *
-            "Use one of: " * join(string.(_grape_fid_types), ", ")))
+            "ctrl.fidelity ':$(ctrl.fidelity)' is not a state-level metric. " *
+            "Use one of: " * join((":" * string(m) for m in STATE_METRICS), ", ")))
     ctrl.l_bound < ctrl.u_bound ||
         throw(ArgumentError("ctrl.l_bound must be < ctrl.u_bound"))
 end
@@ -695,6 +697,10 @@ Extends `MRControl` with Lindblad jump operators for T1/T2 relaxation.
 - `penalties`, `p_weights`, `l_bound`, `u_bound`
 - `method`, `max_iter`, `fidelity`, `lbfgs_memory`, `verbose`, `print_interval`
 
+`fidelity` is a density-matrix-level metric here — `:dm_squared` (Φ^D_Q,
+default) or `:dm_real` (Φ^D_R) of the Hilbert–Schmidt overlap Tr(ρ_targ† ρ(T)) —
+because the propagated object is ρ, not a state vector.
+
 ## Additional fields — relaxation
 
 - `jump_ops::Vector{Matrix{ComplexF64}}` — Lindblad operators L_k (N×N each).
@@ -730,7 +736,7 @@ ctrl = LindbladMRControl(
     decay_rates = rates,
     pwr_levels  = [2π * 600.0],
     pulse_dt    = fill(dt, N_TS),
-    fidelity    = :square,
+    fidelity    = :dm_squared,
     max_iter    = 500,
 )
 guess  = 0.05 .* randn(2, N_TS)
@@ -799,7 +805,7 @@ u_bound        = +1.0
 method         = :lbfgs
 max_iter       = 500
 grad_tol       = 1e-7
-fidelity       = :square    # :square recommended for open systems
+fidelity       = :dm_squared   # Φ^D_Q, recommended for open systems
 lbfgs_memory   = 10
 verbose        = true
 print_interval = 1
@@ -827,7 +833,7 @@ function LindbladMRControl(;
     method         :: Symbol          = :lbfgs,
     max_iter       :: Int             = 500,
     grad_tol       :: Float64         = 1e-7,
-    fidelity       :: Symbol          = :square,
+    fidelity       :: Symbol          = :dm_squared,
     lbfgs_memory   :: Int             = 10,
     verbose        :: Bool            = true,
     print_interval :: Int             = 1,
@@ -838,10 +844,9 @@ function LindbladMRControl(;
     length(jump_ops) == length(decay_rates) ||
         throw(ArgumentError("jump_ops and decay_rates must have the same length " *
                             "(got $(length(jump_ops)) and $(length(decay_rates)))"))
-    fidelity ∈ (:real, :square) ||
-        throw(ArgumentError(
-            "LindbladMRControl fidelity must be :square (recommended) or :real " *
-            "(got :$fidelity). Modulus fidelity is not supported in Liouville space."))
+    # Φ^D_M (DM-Modulus) has no Liouville-space adjoint here.
+    fidelity = canonical_metric(fidelity, (:dm_squared, :dm_real);
+                                context = "LindbladMRControl")
     l_bound < u_bound ||
         throw(ArgumentError("l_bound must be < u_bound"))
     backend ∈ (:cpu, :metal, :cuda) ||

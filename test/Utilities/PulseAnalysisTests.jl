@@ -94,7 +94,7 @@ const _T12σZ = ComplexF64[1 0; 0 -1]
                   b1_factors = [1.0],
                   operators  = [_T12σX/2, _T12σY/2],
                   drift_op   = _T12σZ/2,
-                  fidelity   = :square)
+                  fidelity   = :state_squared)
         @test size(F) == (1, 1)
         @test F[1, 1] ≈ 1.0 atol = 1e-12
     end
@@ -111,7 +111,7 @@ const _T12σZ = ComplexF64[1 0; 0 -1]
                   b1_factors = [0.5, 1.0],
                   operators  = [_T12σX/2, _T12σY/2],
                   drift_op   = _T12σZ/2,
-                  fidelity   = :square)
+                  fidelity   = :state_squared)
         # On-resonance, B1 = 1.0 ⇒ near-perfect inversion.
         @test F[2, 2] > 0.999
         # B1 = 0.5 ⇒ half flip ⇒ fidelity to |1⟩ much lower than at B1 = 1.

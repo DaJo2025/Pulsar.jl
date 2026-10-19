@@ -177,7 +177,7 @@ end
 """
     bloch_sweep_fidelity(w, dt, ψ_init, ψ_target;
                           offsets_hz, b1_factors, operators, drift_op,
-                          fidelity = :square) → Matrix{Float64}
+                          fidelity = :state_squared) → Matrix{Float64}
 
 Single-qubit Bloch-trajectory stress test.  Re-simulates the waveform on a
 2-D grid `(detuning Δf, drive-amplitude factor B₁)` and returns the
@@ -198,8 +198,9 @@ how robust an optimised pulse is to off-resonance / B₁ inhomogeneity.
 - `b1_factors`                  — vector of dimensionless drive scales (1.0 = nominal).
 - `operators`                   — `Vector{Matrix{ComplexF64}}` (length `n_ctrl`).
 - `drift_op`                    — single 2×2 Hermitian operator scaled by `2π·Δf`.
-- `fidelity`                    — `:square` (default) for `|⟨ψ_t|ψ⟩|²`, `:real`
-                                  for `Re⟨ψ_t|ψ⟩`.
+- `fidelity`                    — `:state_squared` (Φ^S_Q, default) for
+                                  `|⟨ψ_t|ψ⟩|²`, `:state_real` (Φ^S_R) for
+                                  `Re⟨ψ_t|ψ⟩`.
 
 # Returns
 `Matrix{Float64}` — `[length(offsets_hz) × length(b1_factors)]` fidelity grid.
@@ -213,10 +214,10 @@ function bloch_sweep_fidelity(
     b1_factors  :: AbstractVector{<:Real},
     operators   :: AbstractVector{<:AbstractMatrix},
     drift_op    :: AbstractMatrix,
-    fidelity    :: Symbol = :square,
+    fidelity    :: Symbol = :state_squared,
 )
-    fidelity ∈ (:square, :real) ||
-        throw(ArgumentError("fidelity must be :square or :real (got :$fidelity)"))
+    fidelity = canonical_metric(fidelity, (:state_squared, :state_real);
+                                context = "bloch_sweep_fidelity")
     n_ctrl, n_t = size(w)
     length(operators) == n_ctrl ||
         throw(ArgumentError("operators length $(length(operators)) ≠ n_ctrl $n_ctrl"))
@@ -252,7 +253,7 @@ function bloch_sweep_fidelity(
                 ψ_cur, ψ_nxt = ψ_nxt, ψ_cur
             end
             z = dot(ψt, ψ_cur)
-            F[i, j] = fidelity === :square ? abs2(z) : real(z)
+            F[i, j] = fidelity === :state_squared ? abs2(z) : real(z)
         end
     end
     return F

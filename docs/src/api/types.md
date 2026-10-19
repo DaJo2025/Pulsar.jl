@@ -54,6 +54,15 @@ random_controls
 zero_controls
 ```
 
+## Fidelity metric names
+
+The Φ^X_Y grid — see [Fidelity metrics](../theory/fidelity.md).
+
+```@docs
+canonical_metric
+metric_label
+```
+
 ## Spin operators
 
 ```@docs

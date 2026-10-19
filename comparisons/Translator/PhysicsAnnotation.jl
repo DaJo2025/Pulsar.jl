@@ -319,7 +319,7 @@ function build_ctrl_from_annotation(ann::PhysicsAnnotation; kwargs...)
             pulse_dt    = pulse_dt,
             method      = ann.method,
             max_iter    = ann.max_iter,
-            fidelity    = :square,
+            fidelity    = :dm_squared,
             verbose     = false;
             kwargs...,
         )

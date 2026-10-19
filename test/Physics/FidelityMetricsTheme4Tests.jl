@@ -66,7 +66,7 @@ using LinearAlgebra
 
         m = ProcessTomographyFidelity(d)
         F_proc = gate_fidelity(U, U_target, m)
-        F_norm = gate_fidelity(U, U_target, NORMALIZED_GATE)
+        F_norm = gate_fidelity(U, U_target, PROP_SQUARED)
         @test F_proc ≈ F_norm atol = 1e-12
 
         # Identity returns exactly 1.
@@ -84,7 +84,7 @@ using LinearAlgebra
         ψ_init   = ComplexF64[1, 0]
         ψ_target = ComplexF64[1, 0]                            # already prepared
 
-        m = CooperativeTargetFidelity(NORMALIZED_GATE, SQUARED_OVERLAP;
+        m = CooperativeTargetFidelity(PROP_SQUARED, STATE_SQUARED;
                                        α = 0.7, β = 0.3)
         F = cooperative_fidelity(U, U_target, ψ_init, ψ_target, m)
         # Both branches return 1, so F = 0.7 + 0.3 = 1.0
@@ -93,16 +93,16 @@ using LinearAlgebra
         # Half-rotation case: state arrives at |+⟩ but target is |1⟩.
         H_gate   = ComplexF64[1 1; 1 -1] / sqrt(2)             # Hadamard
         U_target_X = ComplexF64[0 1; 1 0]                      # X gate target
-        F_g = gate_fidelity(H_gate, U_target_X, NORMALIZED_GATE)
+        F_g = gate_fidelity(H_gate, U_target_X, PROP_SQUARED)
         ψ_f = H_gate * ψ_init
-        F_s = state_fidelity(ψ_target, ψ_f, SQUARED_OVERLAP)
-        m2 = CooperativeTargetFidelity(NORMALIZED_GATE, SQUARED_OVERLAP;
+        F_s = state_fidelity(ψ_target, ψ_f, STATE_SQUARED)
+        m2 = CooperativeTargetFidelity(PROP_SQUARED, STATE_SQUARED;
                                         α = 0.5, β = 0.5)
         F2 = cooperative_fidelity(H_gate, U_target_X, ψ_init, ψ_target, m2)
         @test F2 ≈ 0.5 * F_g + 0.5 * F_s atol = 1e-12
 
         # α + β need not equal 1 (this is just a weighted sum).
-        m3 = CooperativeTargetFidelity(NORMALIZED_GATE, SQUARED_OVERLAP;
+        m3 = CooperativeTargetFidelity(PROP_SQUARED, STATE_SQUARED;
                                         α = 1.0, β = 1.0)
         F3 = cooperative_fidelity(H_gate, U_target_X, ψ_init, ψ_target, m3)
         @test F3 ≈ F_g + F_s atol = 1e-12
@@ -116,6 +116,6 @@ using LinearAlgebra
         @test gate_fidelity(U, Ut, EssentialSubspaceGate([1])) isa Float64
         @test gate_fidelity(U, Ut, ProcessTomographyFidelity(d)) isa Float64
         @test cooperative_fidelity(U, Ut, ψi, ψt,
-                  CooperativeTargetFidelity(NORMALIZED_GATE, SQUARED_OVERLAP)) isa Float64
+                  CooperativeTargetFidelity(PROP_SQUARED, STATE_SQUARED)) isa Float64
     end
 end

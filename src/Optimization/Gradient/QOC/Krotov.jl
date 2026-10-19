@@ -32,7 +32,7 @@ using Statistics: mean
 #   1. explicit chi_constructor wins
 #   2. otherwise, if `metric` is given, build one from `make_chi(metric, target, ψ_T)`
 #   3. otherwise, return nothing (driver falls back to target.target_state /
-#      target.target_unitary, the linear/RealOverlap default).
+#      target.target_unitary, the linear/StateReal default).
 # Mirrors Krotov.jl `make_chi` (workspace.jl:171-176).
 function _resolve_chi_constructor(chi_constructor, metric)
     chi_constructor !== nothing && return chi_constructor

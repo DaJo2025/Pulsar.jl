@@ -30,7 +30,8 @@ Holds the precomputed scalar ensemble parameters and the SU(2) target.
 - `betas`  : precomputed time-independent SU(2) scalar factors, length `N_ens`
 - `AT`     : target SU(2) A component, |AT|² + |BT|² = 1
 - `BT`     : target SU(2) B component
-- `metric` : `:real_trace` or `:squared`
+- `metric` : `:prop_real` (Φ^P_R) or `:state_squared` (Φ^S_Q of the |↑⟩ probe);
+             see `su2_fidelity_gradient`
 - `N_ens`  : ensemble size (N_off, or N_off × N_amp for robustness)
 
 ## Callable interface
@@ -40,7 +41,7 @@ Use `su2_fidelity_and_grad(kernel, phi)` to get `(F, GJ)`.
 ## Constructor from physical parameters
 ```julia
 SU2Kernel(offsets_hz, RF_max_hz, dt, rotation_angle, Theta, Phi_ax;
-          amp_factors=nothing, metric=:real_trace)
+          amp_factors=nothing, metric=:prop_real)
 ```
 - `offsets_hz`     : resonance offsets in Hz (AbstractVector)
 - `RF_max_hz`      : constant peak RF amplitude in Hz
@@ -50,7 +51,7 @@ SU2Kernel(offsets_hz, RF_max_hz, dt, rotation_angle, Theta, Phi_ax;
 - `Phi_ax`         : azimuthal angle of rotation axis (radians)
 - `amp_factors`    : optional Vector of B1 scale factors for robustness
                      (e.g. `[0.9,1.0,1.1]`); if `nothing`, pure offset ensemble
-- `metric`         : `:real_trace` (default) or `:squared`
+- `metric`         : `:prop_real` (default) or `:state_squared`
 """
 struct SU2Kernel
     alpha  :: Vector{ComplexF64}
@@ -68,8 +69,9 @@ function SU2Kernel(offsets_hz        :: AbstractVector{<:Real},
                    Theta             :: Real,
                    Phi_ax            :: Real;
                    amp_factors       :: Union{Nothing,AbstractVector{<:Real}} = nothing,
-                   metric            :: Symbol = :real_trace)
+                   metric            :: Symbol = :prop_real)
 
+    metric      = _su2_metric(metric)
     offsets_rad = 2π .* offsets_hz
     RF_max_rad  = 2π * RF_max_hz
 

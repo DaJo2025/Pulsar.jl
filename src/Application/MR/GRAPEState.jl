@@ -66,9 +66,9 @@ Dispatches to a CPU-threaded or GPU implementation based on `ctrl.backend`
 # Physics (per ensemble member)
 1. Forward:  ψ[n+1] = exp(−i H[n] dt[n]) ψ[n]
 2. Overlap:  z = ⟨ψ_targ | ψ(T)⟩
-3. Fidelity: |z|²  (`:square`) or Re(z) (`:real`)
+3. Fidelity: |z|²  (`:state_squared`, Φ^S_Q) or Re(z) (`:state_real`, Φ^S_R)
 4. Backward: λ[n] = P[n]† λ[n+1],   λ[N+1] = ψ_targ
-5. Gradient (`:square`): ∂F/∂w[k,n] = 2 dt pwr Im(z̄ ⟨λ[n+1]|Op[k]|ψ[n]⟩)
+5. Gradient (`:state_squared`): ∂F/∂w[k,n] = 2 dt pwr Im(z̄ ⟨λ[n+1]|Op[k]|ψ[n]⟩)
 """
 function grape_state_kernel(waveform::Matrix{Float64}, ctrl)
     backend = _resolve_backend_auto(ctrl, waveform)
@@ -147,7 +147,7 @@ function _grape_cpu(waveform::Matrix{Float64}, ctrl)
         elseif ctrl.fast_path === true
             throw(ArgumentError(
                 "MRControl: fast_path=true requested but problem is not eligible. " *
-                "Requires single-spin (dim=2), fidelity=:square, no tracking, " *
+                "Requires single-spin (dim=2), fidelity=:state_squared, no tracking, " *
                 "and pure-Pauli control operators (zero identity component)."))
         end
     end
@@ -413,7 +413,7 @@ end
 """
     fidelity_forward(waveform, drifts, pwr_levels, operators,
                      rho_init, rho_targ, pulse_dt;
-                     fidelity_type = :real,
+                     fidelity_type = :state_real,
                      backend       = get_device()) → Float64
 
 GPU-accelerated ensemble-averaged state-transfer fidelity (forward pass only).
@@ -432,7 +432,8 @@ forward pass) without computing the gradient.
 - `rho_init`   : `Vector{Vector}` of initial states.
 - `rho_targ`   : `Vector{Vector}` of target states.
 - `pulse_dt`   : `AbstractVector{Float64}` of time-step durations (s).
-- `fidelity_type` : `:real` or `:square`.
+- `fidelity_type` : `:state_real` (Φ^S_R), `:state_modulus` (Φ^S_M) or
+  `:state_squared` (Φ^S_Q).
 - `backend`    : `:cpu`, `:metal`, or `:cuda`.
 
 # Returns
@@ -446,9 +447,11 @@ function fidelity_forward(
     rho_init   :: Vector{<:AbstractVector},
     rho_targ   :: Vector{<:AbstractVector},
     pulse_dt   :: AbstractVector{Float64};
-    fidelity_type :: Symbol = :real,
+    fidelity_type :: Symbol = :state_real,
     backend       :: Symbol = get_device(),
 )
+    fidelity_type = canonical_metric(fidelity_type, STATE_METRICS;
+                                     context = "fidelity_forward")
     if backend == :metal && _METAL_LOADED[]
         Metal  = Base.loaded_modules[Base.identify_package("Metal")]
         T      = Complex{Float32}
@@ -677,7 +680,7 @@ end
 
 # ─── Single-spin (dim=2) Bloch-vector fast path ─────────────────────────────
 #
-# Closed-system state-transfer GRAPE with `fidelity=:square` on a single spin
+# Closed-system state-transfer GRAPE with `fidelity=:state_squared` on a single spin
 # (Hilbert dim=2) reduces to real 3D rotations on the Bloch sphere. This path:
 #   • avoids LAPACK eigendecomposition (uses Rodrigues + scalar exp);
 #   • uses real arithmetic (4× over complex);
@@ -686,7 +689,7 @@ end
 #
 # Eligibility (auto-detected):
 #   - dim(state) == 2
-#   - fidelity == :square (Bloch is invariant under global phase, so :real
+#   - fidelity == :state_squared (Bloch is invariant under global phase, so :state_real
 #     would require explicit phase tracking)
 #   - no tracking checkpoints (routed elsewhere before _grape_cpu)
 #   - all control operators are pure Pauli (identity component ≈ 0); the
@@ -695,7 +698,7 @@ end
 @inline function _bloch_problem_eligible(ctrl)::Bool
     isempty(ctrl.rho_init) && return false
     length(ctrl.rho_init[1]) == 2 || return false
-    ctrl.fidelity === :square || return false
+    ctrl.fidelity === :state_squared || return false
     isempty(ctrl.tracking) || return false
     for op in ctrl.operators
         size(op) == (2, 2) || return false

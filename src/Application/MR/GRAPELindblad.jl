@@ -16,7 +16,7 @@ matrices σ = vec(ρ) ∈ ℂ^(N²) instead of pure-state vectors ψ ∈ ℂ^N.
 
   Overlap and fidelity:
     z = ⟨σ_targ[s] | σ[N]⟩          (Hilbert–Schmidt inner product)
-    F = |z|²   (:square)  or  Re(z)  (:real)
+    F = |z|²   (:dm_squared, Φ^D_Q)  or  Re(z)  (:dm_real, Φ^D_R)
 
   Backward propagation:
     λ[N+1] = σ_targ[s]
@@ -75,7 +75,7 @@ normalised control waveform for open quantum systems (Lindblad dynamics).
 # Physics
 The fidelity for one (drift j, pwr p, state pair s) member is:
 
-    F_jps = |⟨σ_targ[s] | σ_jps(T)⟩|²   (`:square`)
+    F_jps = |⟨σ_targ[s] | σ_jps(T)⟩|²   (`:dm_squared`)
 
 where σ = vec(ρ) evolves under exp(𝓛[n,j,p] dt[n]) at each step.
 The returned fidelity and gradient are the mean over all N_ens = n_drifts × n_pwr × n_pairs.
@@ -90,7 +90,7 @@ function grape_lindblad_kernel(waveform::Matrix{Float64}, ctrl)
             throw(ArgumentError(
                 "LindbladMRControl.fast_path = true but problem is ineligible " *
                 "for the dim=2 closed-system Liouville fast path. Required: " *
-                "_hilbert_dim==2, isempty(jump_ops), fidelity ∈ (:real,:square), " *
+                "_hilbert_dim==2, isempty(jump_ops), fidelity ∈ (:dm_real,:dm_squared), " *
                 "all operators pure Pauli (zero identity component)."))
         end
         return _grape_lindblad_cpu(waveform, ctrl)
@@ -183,9 +183,9 @@ function _grape_lindblad_cpu(waveform::Matrix{Float64}, ctrl)
             σ_T  = view(σ_fwd, :, n_t + 1)
             z    = ComplexF64(dot(σ_tg, σ_T))     # ⟨σ_targ | σ(T)⟩
 
-            fid_local += if ctrl.fidelity == :square
+            fid_local += if ctrl.fidelity === :dm_squared
                 real(conj(z) * z)                  # |z|²
-            else  # :real
+            else  # :dm_real
                 real(z)
             end
 
@@ -251,7 +251,7 @@ end
     end
     ctrl._hilbert_dim == 2            || return false
     isempty(ctrl.jump_ops)            || return false
-    ctrl.fidelity ∈ (:real, :square)  || return false
+    ctrl.fidelity ∈ (:dm_real, :dm_squared)  || return false
     for op in ctrl.operators
         size(op) == (2, 2) || return false
         α, _, _, _ = _pauli_coeffs(op)
@@ -384,7 +384,7 @@ function _grape_lindblad_cpu_2x2_pauli(waveform::Matrix{Float64}, ctrl)
             z = 0.5 * conj(a_targ) * a_init +
                 2.0 * (conj(bx_t) * bx_T + conj(by_t) * by_T + conj(bz_t) * bz_T)
 
-            fid_local += ctrl.fidelity == :square ? abs2(z) : real(z)
+            fid_local += ctrl.fidelity === :dm_squared ? abs2(z) : real(z)
 
             # Backward sweep: U(n)† corresponds to R(n̂, -θ) → flip sn
             b_lam[1, n_t + 1] = bx_t
@@ -615,7 +615,7 @@ function _grape_lindblad_chunked(
                      for i in 1:n_chunk]
             for i in 1:n_chunk
                 z = z_vec[i]
-                fidelity_sum += ctrl.fidelity == :square ?
+                fidelity_sum += ctrl.fidelity === :dm_squared ?
                                 real(conj(z) * z) : real(z)
             end
 
@@ -711,7 +711,7 @@ function grape_lindblad_kernel_single(waveform::Matrix{Float64},
 
     σ_T = view(σ_fwd, :, n_t + 1)
     z   = ComplexF64(dot(sigma_targ, σ_T))
-    F   = ctrl.fidelity == :square ? real(conj(z) * z) : real(z)
+    F   = ctrl.fidelity === :dm_squared ? real(conj(z) * z) : real(z)
 
     λ_mat[:, n_t + 1] .= sigma_targ
     for n in n_t:-1:1
@@ -813,7 +813,7 @@ function _grape_lindblad_streaming(
         z_vec = [ComplexF64(dot(σ_targ_cpu, σ_final_cpu[:, i])) for i in 1:n_outer]
         for i in 1:n_outer
             z = z_vec[i]
-            fidelity_sum += ctrl.fidelity == :square ? real(conj(z) * z) : real(z)
+            fidelity_sum += ctrl.fidelity === :dm_squared ? real(conj(z) * z) : real(z)
         end
 
         # ── Streaming backward pass + gradient ───────────────────────────────

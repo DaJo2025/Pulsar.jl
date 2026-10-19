@@ -54,7 +54,7 @@ at each duration.
 ## Example
 ```julia
 kernel = SU2Kernel(range(-20e3, 20e3; length=101), 10e3, 0.5e-6,
-                   π/2, π/2, π/2; metric=:real_trace)
+                   π/2, π/2, π/2; metric=:prop_real)
 
 results = su2_duration_sweep(
     N_TS -> kernel,

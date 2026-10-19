@@ -14,8 +14,8 @@
 #   vs standard:   O(N_ens × (2I+1)³)  full eigendecomposition at every step
 #
 # Supported fidelity metrics:
-#   :state      — ensemble state-transfer  (1/N_ens) Σ_k |⟨ψ_targ|ψ_k(T)⟩|²
-#   :real_trace — ensemble gate fidelity   (1/(dim·N_ens)) Σ_k Re Tr(U_targ† U_k(T))
+#   :state_squared — Φ^S_Q, ensemble state transfer  (1/N_ens) Σ_k |⟨ψ_targ|ψ_k(T)⟩|²
+#   :prop_real     — Φ^P_R, ensemble gate overlap    (1/(dim·N_ens)) Σ_k Re Tr(U_targ† U_k(T))
 #
 # Reduces exactly to SU2Propagator.jl for spin_I = 0.5.
 
@@ -137,46 +137,56 @@ end
 # Fidelity + gradient (exact adjoint)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Metrics the spin-I kernel implements (see `spinI_fidelity_gradient`).
+const SPINI_METRICS = (:state_squared, :prop_real)
+
+_spinI_metric(metric::Symbol) =
+    (metric === :state_squared || metric === :prop_real) ? metric :
+        canonical_metric(metric, SPINI_METRICS; context = "the spin-I kernel")
+
 """
     spinI_fidelity_gradient(phi, Dk_matrices, target, m_values;
-                            metric=:state, psi_init=nothing) → (F, GJ)
+                            metric=:state_squared, psi_init=nothing) → (F, GJ)
 
 Compute ensemble-averaged spin-I fidelity and exact gradient.
 
 # Arguments
 - `phi`         : phase vector, length N_TS
 - `Dk_matrices` : shape `[N_ens, dim, dim]` from `precompute_spinI_params`
-- `target`      : for `:state` — a `(; psi_init, psi_targ)` NamedTuple of `Vector{ComplexF64}`;
-                  for `:real_trace` — `Matrix{ComplexF64}` (dim × dim unitary target U_targ)
+- `target`      : for `:state_squared` — a `(; psi_init, psi_targ)` NamedTuple of `Vector{ComplexF64}`;
+                  for `:prop_real` — `Matrix{ComplexF64}` (dim × dim unitary target U_targ)
 - `m_values`    : quantum numbers from `precompute_spinI_params`
-- `metric`      : `:state` (state-transfer |z|²) or `:real_trace` (Re Tr(U†U)/dim)
+- `metric`      : `:state_squared` (Φ^S_Q, state-transfer |z|²) or `:prop_real`
+                  (Φ^P_R, Re Tr(U†U)/dim).  The pre-Φ^X_Y names `:state` and
+                  `:real_trace` are accepted with a deprecation warning.
 
 # Returns
 - `F`  : ensemble fidelity in [0, 1]
 - `GJ` : gradient of J = 1 − F w.r.t. phi, length N_TS
 
-For `metric=:state` with `spin_I=0.5` and a single-member ensemble, this reduces
+For `metric=:state_squared` with `spin_I=0.5` and a single-member ensemble, this reduces
 to the SU(2) forward-adjoint formula in SU2Propagator.jl.
 """
 function spinI_fidelity_gradient(phi        :: AbstractVector{Float64},
                                  Dk_matrices :: Array{ComplexF64,3},
                                  target,
                                  m_values   :: AbstractVector{Float64};
-                                 metric      :: Symbol = :state)
+                                 metric      :: Symbol = :state_squared)
+    metric = _spinI_metric(metric)
     N_TS  = length(phi)
     N_ens, dim, _ = size(Dk_matrices)
 
-    if metric === :state
+    if metric === :state_squared
         return _spinI_grad_state(phi, Dk_matrices, target.psi_init, target.psi_targ,
                                  m_values, N_TS, N_ens, dim)
-    elseif metric === :real_trace
+    elseif metric === :prop_real
         return _spinI_grad_real_trace(phi, Dk_matrices, target, m_values, N_TS, N_ens, dim)
     else
-        error("Unknown metric: $metric.  Choose :state or :real_trace.")
+        error("Unknown metric: $metric.  Choose :state_squared or :prop_real.")
     end
 end
 
-# ─── :state — state-transfer gradient ────────────────────────────────────────
+# ─── :state_squared — state-transfer gradient ────────────────────────────────────────
 
 function _spinI_grad_state(phi, Dk_matrices, psi_init, psi_targ, m_values, N_TS, N_ens, dim)
     # Forward pass: store full trajectory Psi[k, m, n], n=1..N_TS+1
@@ -243,7 +253,7 @@ function _spinI_grad_state(phi, Dk_matrices, psi_init, psi_targ, m_values, N_TS,
     return F, GJ
 end
 
-# ─── :real_trace — gate-fidelity gradient ─────────────────────────────────────
+# ─── :prop_real — gate-fidelity gradient ─────────────────────────────────────
 # Run dim state-transfer problems simultaneously (propagate identity → columns of U_targ)
 
 function _spinI_grad_real_trace(phi, Dk_matrices, U_targ, m_values, N_TS, N_ens, dim)
@@ -358,7 +368,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    spinI_fidelity_forward(phi, Dk_matrices, target, m_values; metric=:state) → F
+    spinI_fidelity_forward(phi, Dk_matrices, target, m_values; metric=:state_squared) → F
 
 Evaluate spin-I ensemble fidelity without computing the gradient.
 Suitable for CMA-ES, PSO, DE, and basin-hopping optimizers.
@@ -367,19 +377,20 @@ function spinI_fidelity_forward(phi        :: AbstractVector{Float64},
                                 Dk_matrices :: Array{ComplexF64,3},
                                 target,
                                 m_values   :: AbstractVector{Float64};
-                                metric      :: Symbol = :state)
+                                metric      :: Symbol = :state_squared)
+    metric = _spinI_metric(metric)
     N_TS  = length(phi)
     N_ens, dim, _ = size(Dk_matrices)
     N_ens_f = Float64(N_ens)
 
-    if metric === :state
+    if metric === :state_squared
         Psi = zeros(ComplexF64, N_ens, dim, N_TS + 1)
         for k in 1:N_ens; Psi[k, :, 1] .= target.psi_init; end
         spinI_forward_pass!(Psi, phi, Dk_matrices, m_values)
         psi_targ = target.psi_targ
         return sum(k -> abs2(dot(psi_targ, @view(Psi[k, :, N_TS+1]))), 1:N_ens) / N_ens_f
 
-    elseif metric === :real_trace
+    elseif metric === :prop_real
         U_targ = target  # Matrix{ComplexF64}
         # Propagate identity matrix
         Phi = zeros(ComplexF64, N_ens, dim, dim, N_TS + 1)
@@ -401,6 +412,6 @@ function spinI_fidelity_forward(phi        :: AbstractVector{Float64},
         end
         return F / (dim * N_ens_f)
     else
-        error("Unknown metric: $metric.  Choose :state or :real_trace.")
+        error("Unknown metric: $metric.  Choose :state_squared or :prop_real.")
     end
 end

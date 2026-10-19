@@ -132,20 +132,31 @@ end
 # Fidelity + gradient (exact adjoint)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Metrics the SU(2) kernel implements (see `su2_fidelity_gradient`).
+const SU2_METRICS = (:prop_real, :state_squared)
+
+_su2_metric(metric::Symbol) =
+    (metric === :prop_real || metric === :state_squared) ? metric :
+        canonical_metric(metric, SU2_METRICS; context = "the SU(2) kernel")
+
 """
-    su2_fidelity_gradient(phi, alpha, betas, AT, BT; metric=:real_trace,
+    su2_fidelity_gradient(phi, alpha, betas, AT, BT; metric=:prop_real,
                           workspace=nothing) → (F, GJ)
 
 Compute the ensemble-averaged SU(2) fidelity and its exact gradient with respect
 to the phase vector `phi`, using the co-state (adjoint) method.
 
-**Fidelity metrics:**
-- `:real_trace` (default): `F = mean_k Re(AT* Ak(T) + BT* Bk(T))`
-  Equivalent to `Re Tr(U_targ† U) / dim` for a spin-1/2 universal-rotation target.
-- `:squared`: `F = mean_k |AT* Ak(T) + BT* Bk(T)|²`
+**Fidelity metrics** (`z_k = AT* Ak(T) + BT* Bk(T) = ⟨↑|U_targ† U_k|↑⟩`):
+- `:prop_real` (Φ^P_R, default): `F = mean_k Re z_k`.
+  Equal to `Re Tr(U_targ† U) / dim` for a spin-1/2 universal-rotation target.
+- `:state_squared` (Φ^S_Q): `F = mean_k |z_k|²` — the state fidelity of the
+  |↑⟩ probe, |⟨U_targ ↑|U_k ↑⟩|².  Not Φ^P_Q, which would be `(Re z_k)²`.
+
+The pre-Φ^X_Y names `:real_trace` and `:squared` are accepted with a
+deprecation warning.
 
 **Returns:**
-- `F`  : fidelity in [0, 1] (for `:real_trace`) or [0, 1] (for `:squared`)
+- `F`  : fidelity in [−1, 1] (for `:prop_real`) or [0, 1] (for `:state_squared`)
 - `GJ` : gradient of `J = 1 − F` w.r.t. `phi`; length `N_TS`.
   Pass as `grad!` argument to L-BFGS-B (it is already the gradient of the cost
   to minimise, not the negated fidelity gradient).
@@ -159,8 +170,9 @@ function su2_fidelity_gradient(phi::AbstractVector{Float64},
                                betas::AbstractVector{ComplexF64},
                                AT::ComplexF64,
                                BT::ComplexF64;
-                               metric::Symbol = :real_trace,
+                               metric::Symbol = :prop_real,
                                workspace = nothing)
+    metric = _su2_metric(metric)
     N_TS  = length(phi)
     N_ens = length(alpha)
 
@@ -196,12 +208,12 @@ end
 # ─── metric-specific terminal fidelity and initial co-state ──────────────────
 
 function _su2_terminal(Af, Bf, AT, BT, N_ens_f, metric::Symbol)
-    if metric === :real_trace
+    if metric === :prop_real
         overlaps = @. real(conj(AT) * Af + conj(BT) * Bf)
         F  = sum(overlaps) / N_ens_f
         pA = fill(-conj(AT) / N_ens_f, length(Af))
         pB = fill(-conj(BT) / N_ens_f, length(Bf))
-    elseif metric === :squared
+    elseif metric === :state_squared
         z  = @. conj(AT) * Af + conj(BT) * Bf
         sq = @. abs2(z)
         F  = sum(sq) / N_ens_f
@@ -209,7 +221,7 @@ function _su2_terminal(Af, Bf, AT, BT, N_ens_f, metric::Symbol)
         pA = @. -(z * conj(AT)) / N_ens_f
         pB = @. -(z * conj(BT)) / N_ens_f
     else
-        error("Unknown SU(2) fidelity metric: $metric.  Choose :real_trace or :squared.")
+        error("Unknown SU(2) fidelity metric: $metric.  Choose :prop_real or :state_squared.")
     end
     return F, pA, pB
 end
@@ -243,7 +255,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    su2_fidelity_forward(phi, alpha, betas, AT, BT; metric=:real_trace) → F
+    su2_fidelity_forward(phi, alpha, betas, AT, BT; metric=:prop_real) → F
 
 Evaluate the SU(2) ensemble fidelity for `phi` without computing the gradient.
 Cheaper than `su2_fidelity_gradient` when no gradient is needed (e.g. CMA-ES, PSO, DE).
@@ -253,7 +265,8 @@ function su2_fidelity_forward(phi::AbstractVector{Float64},
                               betas::AbstractVector{ComplexF64},
                               AT::ComplexF64,
                               BT::ComplexF64;
-                              metric::Symbol = :real_trace)
+                              metric::Symbol = :prop_real)
+    metric = _su2_metric(metric)
     N_TS  = length(phi)
     N_ens = length(alpha)
     A = zeros(ComplexF64, N_ens, N_TS + 1)
@@ -263,11 +276,9 @@ function su2_fidelity_forward(phi::AbstractVector{Float64},
     Af = @view A[:, N_TS + 1]
     Bf = @view B[:, N_TS + 1]
     N_ens_f = Float64(N_ens)
-    if metric === :real_trace
+    if metric === :prop_real
         return sum(@. real(conj(AT) * Af + conj(BT) * Bf)) / N_ens_f
-    elseif metric === :squared
+    else  # :state_squared
         return sum(@. abs2(conj(AT) * Af + conj(BT) * Bf)) / N_ens_f
-    else
-        error("Unknown SU(2) fidelity metric: $metric.  Choose :real_trace or :squared.")
     end
 end

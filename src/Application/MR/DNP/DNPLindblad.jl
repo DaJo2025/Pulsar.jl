@@ -224,7 +224,7 @@ function grape_dnp_lindblad_kernel(
             for k in 1:nc
                 tmp   = L_controls[k] * σ_fwd[:, n]
                 inner = ComplexF64(dot(λ_mat[:, n + 1], tmp))
-                G[k, n] += lindblad_grad_prefactor(z, inner, dt; type=:real)
+                G[k, n] += lindblad_grad_prefactor(z, inner, dt; type=:dm_real)
             end
         end
         return G

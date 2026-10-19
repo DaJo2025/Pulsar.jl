@@ -98,8 +98,8 @@ function compute_grape_gradient(system::AbstractQuantumSystem,
             throw(ArgumentError(
                 "target.type is \"unitary\" but target.target_unitary is nothing"))
         end
-        sym = target.metric === :auto ? :normalized : target.metric
-        if sym === :normalized
+        sym = target.metric === :auto ? :prop_squared : target.metric
+        if sym === :prop_squared
             return compute_gradient_gate(U_total, P, Q, system.H_controls,
                                          target.target_unitary, controls.dt)
         else
@@ -120,8 +120,8 @@ function compute_grape_gradient(system::AbstractQuantumSystem,
         psi_init   = target.initial_state === nothing ?
                         target.target_state : target.initial_state
         psi_target = target.target_state
-        sym = target.metric === :auto ? :square : target.metric
-        if sym === :square
+        sym = target.metric === :auto ? :state_squared : target.metric
+        if sym === :state_squared
             return compute_gradient_state(U_total, P, Q, system.H_controls,
                                           psi_init, psi_target, controls.dt)
         else
@@ -185,8 +185,8 @@ function compute_grape_gradient_with!(G::Matrix{Float64},
     if target.type == "unitary"
         target.target_unitary === nothing &&
             throw(ArgumentError("target.type is \"unitary\" but target.target_unitary is nothing"))
-        sym = target.metric === :auto ? :normalized : target.metric
-        if sym === :normalized
+        sym = target.metric === :auto ? :prop_squared : target.metric
+        if sym === :prop_squared
             _gate_gradient_into!(G, U_total, P, Q, system.H_controls,
                                  target.target_unitary, dt)
         else
@@ -200,8 +200,8 @@ function compute_grape_gradient_with!(G::Matrix{Float64},
     elseif target.type == "state"
         target.target_state === nothing &&
             throw(ArgumentError("target.type is \"state\" but target.target_state is nothing"))
-        sym = target.metric === :auto ? :square : target.metric
-        if sym === :square
+        sym = target.metric === :auto ? :state_squared : target.metric
+        if sym === :state_squared
             _state_gradient_into!(G, U_total, P, Q, system.H_controls,
                                   target.target_state, target.target_state, dt)
         else
@@ -350,7 +350,7 @@ end
 #
 # Same loop kernel as `_gate_gradient_into!`, but the chain-rule factor is
 # selected at compile time via dispatch on `metric::AbstractFidelityMetric`.
-# Used when the user wants a non-`:square` gate metric — `ModulusGate`,
+# Used when the user wants a non-`:prop_squared` gate metric — `ModulusGate`,
 # `RealGate`, etc. — without rewriting the propagator setup.
 #
 # The "bare" inner product passed to `fidelity_grad_prefactor` is

@@ -228,11 +228,12 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    trotter_fidelity_gradient(phi, tp, psi_init, psi_targ; metric=:state) → (F, GJ)
+    trotter_fidelity_gradient(phi, tp, psi_init, psi_targ; metric=:state_squared) → (F, GJ)
 
 Strang-Trotter ensemble fidelity and exact adjoint gradient w.r.t. `phi`.
 
-`metric=:state` (the only supported option) computes ensemble state-transfer fidelity:
+`metric=:state_squared` (Φ^S_Q, the only supported option) computes ensemble
+state-transfer fidelity:
 ```
 F = (1/N_ens) Σ_k |⟨ψ_targ | U_k(T) | ψ_init⟩|²
 ```
@@ -245,8 +246,8 @@ function trotter_fidelity_gradient(phi      :: AbstractVector{Float64},
                                    tp       :: NamedTuple,
                                    psi_init :: AbstractVector{ComplexF64},
                                    psi_targ :: AbstractVector{ComplexF64};
-                                   metric   :: Symbol = :state)
-    metric === :state || error("trotter_fidelity_gradient: only :state metric supported")
+                                   metric   :: Symbol = :state_squared)
+    canonical_metric(metric, (:state_squared,); context = "trotter_fidelity_gradient")
 
     N_TS    = length(phi)
     N_ens   = length(tp.U_drift_halves)
@@ -327,7 +328,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    trotter_fidelity_forward(phi, tp, psi_init, psi_targ; metric=:state) → F
+    trotter_fidelity_forward(phi, tp, psi_init, psi_targ; metric=:state_squared) → F
 
 Strang-Trotter ensemble fidelity without gradient.
 Suitable for CMA-ES, PSO, basin-hopping, and other derivative-free optimizers.
@@ -336,8 +337,8 @@ function trotter_fidelity_forward(phi      :: AbstractVector{Float64},
                                   tp       :: NamedTuple,
                                   psi_init :: AbstractVector{ComplexF64},
                                   psi_targ :: AbstractVector{ComplexF64};
-                                  metric   :: Symbol = :state)
-    metric === :state || error("trotter_fidelity_forward: only :state metric supported")
+                                  metric   :: Symbol = :state_squared)
+    canonical_metric(metric, (:state_squared,); context = "trotter_fidelity_forward")
 
     N_TS    = length(phi)
     N_ens   = length(tp.U_drift_halves)

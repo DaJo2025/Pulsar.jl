@@ -10,8 +10,11 @@ using Statistics: mean
 #
 # Type-dispatched fidelity variants eliminate runtime Symbol comparisons and
 # allow the compiler to specialise on the metric without type-instability.
-# The legacy Symbol-based API (`type=:real`, etc.) is preserved as a thin
-# wrapper that resolves the symbol once and delegates to the typed methods.
+# The Symbol-based API (`type = :state_real`, etc.) is a thin wrapper that
+# resolves the symbol once and delegates to the typed methods.
+#
+# Names follow the Φ^X_Y grid (see Types/Targets.jl): level X ∈ {Prop, State,
+# DM} × reduction Y ∈ {Real, Modulus, Squared} of the complex overlap z.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 """
@@ -19,64 +22,73 @@ using Statistics: mean
 
 Abstract supertype for all fidelity metric singletons.
 
-Concrete subtypes are zero-field structs used as dispatch tags:
+Concrete subtypes are zero-field structs used as dispatch tags.  Each is a
+choice of what is compared (propagator, state or density matrix) and how the
+complex overlap `z` is reduced to a real number:
 
-| Type                   | Equivalent Symbol  | Formula                              |
-|:---------------------- |:------------------ |:------------------------------------ |
-| `RealOverlap`          | `:real`            | Re(⟨ψ_t\\|ψ⟩)                       |
-| `SquaredOverlap`       | `:square`          | \\|⟨ψ_t\\|ψ⟩\\|²                    |
-| `ModulusOverlap`       | `:modulus`         | \\|⟨ψ_t\\|ψ⟩\\|                     |
-| `UhlmannFidelity`      | `:dm_uhlmann`      | (Tr√(√ρ σ √ρ))²                     |
-| `LinearDMFidelity`     | `:dm_linear`       | Re Tr(ρ† σ)                         |
-| `NormalizedGate`       | `:normalized`      | \\|Tr(U†_t U)\\|²/dim²              |
-| `RealGate`             | `:real` (gate)     | Re[Tr(U†_t U)]/dim                  |
-| `AverageGate`          | `:average`         | (dim·F_norm + 1)/(dim+1)            |
+| Symbol           | Type           | Paper     | Formula                       |
+|:---------------- |:-------------- |:--------- |:----------------------------- |
+| `:prop_real`     | `PropReal`     | Φ^P_R     | Re Tr(U_t† U)/dim             |
+| `:prop_modulus`  | `PropModulus`  | Φ^P_M     | \\|Tr(U_t† U)\\|/dim          |
+| `:prop_squared`  | `PropSquared`  | Φ^P_Q     | \\|Tr(U_t† U)\\|²/dim²        |
+| `:state_real`    | `StateReal`    | Φ^S_R     | Re⟨ψ_t\\|ψ⟩                   |
+| `:state_modulus` | `StateModulus` | Φ^S_M     | \\|⟨ψ_t\\|ψ⟩\\|               |
+| `:state_squared` | `StateSquared` | Φ^S_Q     | \\|⟨ψ_t\\|ψ⟩\\|²              |
+| `:dm_real`       | `DMReal`       | Φ^D_R     | Re Tr(ρ_t† ρ)                 |
+| `:dm_modulus`    | `DMModulus`    | Φ^D_M     | \\|Tr(ρ_t† ρ)\\|              |
+| `:dm_squared`    | `DMSquared`    | Φ^D_Q     | \\|Tr(ρ_t† ρ)\\|²             |
+| `:prop_average`  | `PropAverage`  | Φ^P_avg   | (dim·Φ^P_Q + 1)/(dim + 1)     |
+| `:dm_uhlmann`    | `DMUhlmann`    | Φ^D_Uhl   | (Tr√(√ρ σ √ρ))²               |
+
+The pre-Φ^X_Y type names (`RealOverlap`, `NormalizedGate`, …) remain as
+deprecated aliases.
 """
 abstract type AbstractFidelityMetric end
 
-# ── State metrics ────────────────────────────────────────────────────────────
-"Fidelity metric: Re(⟨ψ_target|ψ_final⟩).  Phase-sensitive, range [−1, 1]."
-struct RealOverlap      <: AbstractFidelityMetric end
-
-"Fidelity metric: |⟨ψ_target|ψ_final⟩|².  Phase-insensitive, range [0, 1]."
-struct SquaredOverlap   <: AbstractFidelityMetric end
-
-"Fidelity metric: |⟨ψ_target|ψ_final⟩|.  Non-smooth at zero, range [0, 1]."
-struct ModulusOverlap   <: AbstractFidelityMetric end
-
-"Fidelity metric: Uhlmann–Jozsa (Tr√(√ρ σ √ρ))².  For mixed states."
-struct UhlmannFidelity  <: AbstractFidelityMetric end
-
-"Fidelity metric: Re Tr(ρ† σ).  Fast linear approximation for mixed states."
-struct LinearDMFidelity <: AbstractFidelityMetric end
-
-# ── Gate metrics ─────────────────────────────────────────────────────────────
-"Gate fidelity metric: |Tr(U†_t U)|²/dim²  (standard process fidelity)."
-struct NormalizedGate   <: AbstractFidelityMetric end
-
+# ── Propagator level (P) ─────────────────────────────────────────────────────
 """
-Gate overlap metric: `Re[Tr(U†_t U)] / dim`.
+Φ^P_R (Prop-Real): `Re[Tr(U_t† U)] / dim`.
 
 This is a **signed** phase-sensitive overlap, **not** a fidelity — it can
 take values in `[-1, 1]`.  It is suitable as an objective for gradient ascent
 (because the gradient is linear in the overlap, not in its modulus) and for
 tracking phase alignment during optimisation.
 
-Use `NormalizedGate` if you want a conventional fidelity in `[0, 1]`.
+Use `PropSquared` if you want a conventional fidelity in `[0, 1]`.
 """
-struct RealGate         <: AbstractFidelityMetric end
+struct PropReal     <: AbstractFidelityMetric end
 
-"Gate fidelity metric: (dim·F_norm + 1)/(dim+1)  (Haar-average gate fidelity)."
-struct AverageGate      <: AbstractFidelityMetric end
+"Φ^P_M (Prop-Modulus): |Tr(U_t† U)|/dim  (modulus of the normalised gate overlap)."
+struct PropModulus  <: AbstractFidelityMetric end
 
-"Gate overlap metric: |Tr(U†_t U)|/dim  (modulus of normalised gate overlap)."
-struct ModulusGate      <: AbstractFidelityMetric end
+"Φ^P_Q (Prop-Squared): |Tr(U_t† U)|²/dim²  (standard process fidelity)."
+struct PropSquared  <: AbstractFidelityMetric end
 
-"DM fidelity metric: |Tr(ρ† σ)|²  (squared Hilbert–Schmidt overlap)."
-struct SquaredDMFidelity <: AbstractFidelityMetric end
+"Φ^P_avg (Prop-Average): (dim·Φ^P_Q + 1)/(dim + 1)  (Haar-average gate fidelity)."
+struct PropAverage  <: AbstractFidelityMetric end
 
-"DM fidelity metric: |Tr(ρ† σ)|  (modulus of Hilbert–Schmidt overlap)."
-struct ModulusDMFidelity <: AbstractFidelityMetric end
+# ── State level (S) ──────────────────────────────────────────────────────────
+"Φ^S_R (State-Real): Re(⟨ψ_target|ψ_final⟩).  Phase-sensitive, range [−1, 1]."
+struct StateReal    <: AbstractFidelityMetric end
+
+"Φ^S_M (State-Modulus): |⟨ψ_target|ψ_final⟩|.  Non-smooth at zero, range [0, 1]."
+struct StateModulus <: AbstractFidelityMetric end
+
+"Φ^S_Q (State-Squared): |⟨ψ_target|ψ_final⟩|².  Phase-insensitive, range [0, 1]."
+struct StateSquared <: AbstractFidelityMetric end
+
+# ── Density-matrix level (D) ─────────────────────────────────────────────────
+"Φ^D_R (DM-Real): Re Tr(ρ† σ).  Fast linear approximation for mixed states."
+struct DMReal       <: AbstractFidelityMetric end
+
+"Φ^D_M (DM-Modulus): |Tr(ρ† σ)|  (modulus of the Hilbert–Schmidt overlap)."
+struct DMModulus    <: AbstractFidelityMetric end
+
+"Φ^D_Q (DM-Squared): |Tr(ρ† σ)|²  (squared Hilbert–Schmidt overlap)."
+struct DMSquared    <: AbstractFidelityMetric end
+
+"Φ^D_Uhl (DM-Uhlmann): Uhlmann–Jozsa (Tr√(√ρ σ √ρ))².  For mixed states."
+struct DMUhlmann    <: AbstractFidelityMetric end
 
 # ── Theme 4 — Subspace / cooperative / process-tomography metrics ──────────
 
@@ -137,47 +149,68 @@ struct ProcessTomographyFidelity <: AbstractFidelityMetric
     dim :: Int
 end
 
-# ── Exported singletons (use as values, e.g. state_fidelity(ψ, φ, REAL_OVERLAP)) ─
-const REAL_OVERLAP     = RealOverlap()
-const SQUARED_OVERLAP  = SquaredOverlap()
-const MODULUS_OVERLAP  = ModulusOverlap()
-const UHLMANN_FIDELITY = UhlmannFidelity()
-const LINEAR_DM        = LinearDMFidelity()
-const NORMALIZED_GATE  = NormalizedGate()
-const REAL_GATE        = RealGate()
-const AVERAGE_GATE     = AverageGate()
-const MODULUS_GATE     = ModulusGate()
-const SQUARED_DM       = SquaredDMFidelity()
-const MODULUS_DM       = ModulusDMFidelity()
+# ── Exported singletons (use as values, e.g. state_fidelity(ψ, φ, STATE_REAL)) ─
+const PROP_REAL     = PropReal()
+const PROP_MODULUS  = PropModulus()
+const PROP_SQUARED  = PropSquared()
+const PROP_AVERAGE  = PropAverage()
+const STATE_REAL    = StateReal()
+const STATE_MODULUS = StateModulus()
+const STATE_SQUARED = StateSquared()
+const DM_REAL       = DMReal()
+const DM_MODULUS    = DMModulus()
+const DM_SQUARED    = DMSquared()
+const DM_UHLMANN    = DMUhlmann()
 
-# ── Symbol → metric conversion (used by legacy wrappers) ────────────────────
+# ── Pre-Φ^X_Y names, kept as deprecated aliases ─────────────────────────────
+Base.@deprecate_binding RealOverlap       StateReal
+Base.@deprecate_binding SquaredOverlap    StateSquared
+Base.@deprecate_binding ModulusOverlap    StateModulus
+Base.@deprecate_binding UhlmannFidelity   DMUhlmann
+Base.@deprecate_binding LinearDMFidelity  DMReal
+Base.@deprecate_binding SquaredDMFidelity DMSquared
+Base.@deprecate_binding ModulusDMFidelity DMModulus
+Base.@deprecate_binding NormalizedGate    PropSquared
+Base.@deprecate_binding RealGate          PropReal
+Base.@deprecate_binding AverageGate       PropAverage
+Base.@deprecate_binding ModulusGate       PropModulus
+Base.@deprecate_binding REAL_OVERLAP      STATE_REAL
+Base.@deprecate_binding SQUARED_OVERLAP   STATE_SQUARED
+Base.@deprecate_binding MODULUS_OVERLAP   STATE_MODULUS
+Base.@deprecate_binding UHLMANN_FIDELITY  DM_UHLMANN
+Base.@deprecate_binding LINEAR_DM         DM_REAL
+Base.@deprecate_binding SQUARED_DM        DM_SQUARED
+Base.@deprecate_binding MODULUS_DM        DM_MODULUS
+Base.@deprecate_binding NORMALIZED_GATE   PROP_SQUARED
+Base.@deprecate_binding REAL_GATE         PROP_REAL
+Base.@deprecate_binding AVERAGE_GATE      PROP_AVERAGE
+Base.@deprecate_binding MODULUS_GATE      PROP_MODULUS
+
+# ── Symbol → metric conversion (used by the Symbol-keyword wrappers) ────────
+# Canonical names are matched first; anything else (including a pre-Φ^X_Y
+# name) goes through `canonical_metric`, which translates or throws.
+const _STATE_FN_METRICS = (STATE_METRICS..., DM_METRICS..., :dm_uhlmann)
+const _GATE_FN_METRICS  = (PROP_METRICS..., :prop_average)
+
 function _state_symbol_to_metric(sym::Symbol)::AbstractFidelityMetric
-    if sym === :real       return REAL_OVERLAP
-    elseif sym === :square  return SQUARED_OVERLAP
-    elseif sym === :modulus return MODULUS_OVERLAP
-    elseif sym === :dm_uhlmann return UHLMANN_FIDELITY
-    elseif sym === :dm_linear  return LINEAR_DM
-    elseif sym === :dm_real    return LINEAR_DM
-    elseif sym === :dm_square  return SQUARED_DM
-    elseif sym === :dm_modulus return MODULUS_DM
-    else
-        throw(ArgumentError(
-            "Unknown state fidelity type ':$sym'. " *
-            "Valid: :real, :square, :modulus, :dm_uhlmann, :dm_linear, " *
-            ":dm_real, :dm_square, :dm_modulus"))
-    end
+    sym === :state_real    && return STATE_REAL
+    sym === :state_squared && return STATE_SQUARED
+    sym === :state_modulus && return STATE_MODULUS
+    sym === :dm_real       && return DM_REAL
+    sym === :dm_squared    && return DM_SQUARED
+    sym === :dm_modulus    && return DM_MODULUS
+    sym === :dm_uhlmann    && return DM_UHLMANN
+    return _state_symbol_to_metric(
+        canonical_metric(sym, _STATE_FN_METRICS; context = "state_fidelity"))
 end
 
 function _gate_symbol_to_metric(sym::Symbol)::AbstractFidelityMetric
-    if sym === :normalized return NORMALIZED_GATE
-    elseif sym === :real   return REAL_GATE
-    elseif sym === :average return AVERAGE_GATE
-    elseif sym === :modulus return MODULUS_GATE
-    else
-        throw(ArgumentError(
-            "Unknown gate fidelity type ':$sym'. " *
-            "Valid: :normalized, :real, :average, :modulus"))
-    end
+    sym === :prop_squared && return PROP_SQUARED
+    sym === :prop_real    && return PROP_REAL
+    sym === :prop_modulus && return PROP_MODULUS
+    sym === :prop_average && return PROP_AVERAGE
+    return _gate_symbol_to_metric(
+        canonical_metric(sym, _GATE_FN_METRICS; context = "gate_fidelity"))
 end
 
 # ── Krotov χ-boundary derivation ─────────────────────────────────────────────
@@ -202,18 +235,18 @@ Return the Krotov co-state boundary χ(T) consistent with the given fidelity
 metric.  Used by `krotov_optimize` when no `chi_constructor` is supplied;
 mirrors the auto-derivation pattern in Krotov.jl.
 """
-make_chi(::RealOverlap,    target, _ψ_T) = target.target_state
-make_chi(::ModulusOverlap, target, _ψ_T) = target.target_state   # equivalent up to a phase factor
-make_chi(::RealGate,       target, _U_T) = target.target_unitary
+make_chi(::StateReal,    target, _ψ_T) = target.target_state
+make_chi(::StateModulus, target, _ψ_T) = target.target_state   # equivalent up to a phase factor
+make_chi(::PropReal,       target, _U_T) = target.target_unitary
 
 # Nonlinear functionals: boundary depends on the current trajectory.
-function make_chi(::SquaredOverlap, target, ψ_T)
+function make_chi(::StateSquared, target, ψ_T)
     ψ_T === nothing && return target.target_state
     s = dot(target.target_state, ψ_T)
     return s .* target.target_state
 end
 
-function make_chi(::NormalizedGate, target, U_T)
+function make_chi(::PropSquared, target, U_T)
     U_T === nothing && return target.target_unitary
     d  = target.dim
     α  = tr(target.target_unitary' * U_T) / (d * d)
@@ -230,19 +263,19 @@ resolved at compile time, making the call branch-free and type-stable.
 
 # Example
 ```julia
-F = state_fidelity(ψ_target, ψ_final, REAL_OVERLAP)
-F = state_fidelity(ρ_target, ρ_final, UHLMANN_FIDELITY)
+F = state_fidelity(ψ_target, ψ_final, STATE_REAL)
+F = state_fidelity(ρ_target, ρ_final, DM_UHLMANN)
 ```
 """
-state_fidelity(ψ_targ, ψ_final, ::RealOverlap)     = real(dot(ψ_targ, ψ_final))
-state_fidelity(ψ_targ, ψ_final, ::SquaredOverlap)  = abs2(dot(ψ_targ, ψ_final))
-state_fidelity(ψ_targ, ψ_final, ::ModulusOverlap)  = abs(dot(ψ_targ, ψ_final))
-state_fidelity(ψ_targ, ψ_final, ::UhlmannFidelity) = _sf_uhlmann(ψ_targ, ψ_final)
-state_fidelity(ψ_targ::AbstractMatrix, ψ_final::AbstractMatrix, ::LinearDMFidelity) =
+state_fidelity(ψ_targ, ψ_final, ::StateReal)     = real(dot(ψ_targ, ψ_final))
+state_fidelity(ψ_targ, ψ_final, ::StateSquared)  = abs2(dot(ψ_targ, ψ_final))
+state_fidelity(ψ_targ, ψ_final, ::StateModulus)  = abs(dot(ψ_targ, ψ_final))
+state_fidelity(ψ_targ, ψ_final, ::DMUhlmann) = _sf_uhlmann(ψ_targ, ψ_final)
+state_fidelity(ψ_targ::AbstractMatrix, ψ_final::AbstractMatrix, ::DMReal) =
     _sf_linear(ψ_targ, ψ_final)
 # Pure-state shortcut: with ρ_t = |ψ_t⟩⟨ψ_t| and ρ_f = |ψ_f⟩⟨ψ_f|,
 #   Re Tr(ρ_t† ρ_f) = |⟨ψ_t|ψ_f⟩|² (real, ≥ 0).
-state_fidelity(ψ_targ::AbstractVector, ψ_final::AbstractVector, ::LinearDMFidelity) =
+state_fidelity(ψ_targ::AbstractVector, ψ_final::AbstractVector, ::DMReal) =
     abs2(dot(ψ_targ, ψ_final))
 
 # ── DM Hilbert–Schmidt inner product Tr(ρ† σ) ────────────────────────────────
@@ -254,17 +287,17 @@ state_fidelity(ψ_targ::AbstractVector, ψ_final::AbstractVector, ::LinearDMFide
     dot(rho, sigma)
 
 # Matrix form: ρ, σ are density matrices, _dm_inner = Tr(ρ† σ) = z_DM.
-state_fidelity(rho::AbstractMatrix, sigma::AbstractMatrix, ::SquaredDMFidelity)::Float64 =
+state_fidelity(rho::AbstractMatrix, sigma::AbstractMatrix, ::DMSquared)::Float64 =
     abs2(_dm_inner(rho, sigma))
-state_fidelity(rho::AbstractMatrix, sigma::AbstractMatrix, ::ModulusDMFidelity)::Float64 =
+state_fidelity(rho::AbstractMatrix, sigma::AbstractMatrix, ::DMModulus)::Float64 =
     abs(_dm_inner(rho, sigma))
 
 # Pure-state shortcut: with ρ_T = |ψ_T⟩⟨ψ_T| and ρ_f = |ψ_f⟩⟨ψ_f|,
 #   z_DM = Tr(ρ_T† ρ_f) = |⟨ψ_T|ψ_f⟩|² = |z_S|² (real, ≥ 0).
 # Therefore |z_DM|  = |z_S|²   and  |z_DM|² = |z_S|⁴.
-state_fidelity(ψ_targ::AbstractVector, ψ_final::AbstractVector, ::ModulusDMFidelity)::Float64 =
+state_fidelity(ψ_targ::AbstractVector, ψ_final::AbstractVector, ::DMModulus)::Float64 =
     abs2(dot(ψ_targ, ψ_final))               # |z_S|²  ≡  |z_DM|
-state_fidelity(ψ_targ::AbstractVector, ψ_final::AbstractVector, ::SquaredDMFidelity)::Float64 =
+state_fidelity(ψ_targ::AbstractVector, ψ_final::AbstractVector, ::DMSquared)::Float64 =
     abs2(dot(ψ_targ, ψ_final))^2             # |z_S|⁴  ≡  |z_DM|²
 
 # ── Type-dispatched gate fidelity ────────────────────────────────────────────
@@ -276,12 +309,12 @@ Type-dispatched gate fidelity.  Prefer this form in new code.
 
 # Example
 ```julia
-F = gate_fidelity(U_opt, U_target, NORMALIZED_GATE)
-F = gate_fidelity(U_opt, U_target, AVERAGE_GATE)
+F = gate_fidelity(U_opt, U_target, PROP_SQUARED)
+F = gate_fidelity(U_opt, U_target, PROP_AVERAGE)
 ```
 """
 function gate_fidelity(U::Matrix{ComplexF64}, U_target::Matrix{ComplexF64},
-                       ::NormalizedGate)::Float64
+                       ::PropSquared)::Float64
     _check_square(U, "U"); _check_square(U_target, "U_target")
     size(U) == size(U_target) || throw(DimensionMismatch(
         "U $(size(U)) ≠ U_target $(size(U_target))"))
@@ -290,7 +323,7 @@ function gate_fidelity(U::Matrix{ComplexF64}, U_target::Matrix{ComplexF64},
 end
 
 function gate_fidelity(U::Matrix{ComplexF64}, U_target::Matrix{ComplexF64},
-                       ::RealGate)::Float64
+                       ::PropReal)::Float64
     _check_square(U, "U"); _check_square(U_target, "U_target")
     size(U) == size(U_target) || throw(DimensionMismatch(
         "U $(size(U)) ≠ U_target $(size(U_target))"))
@@ -299,7 +332,7 @@ function gate_fidelity(U::Matrix{ComplexF64}, U_target::Matrix{ComplexF64},
 end
 
 function gate_fidelity(U::Matrix{ComplexF64}, U_target::Matrix{ComplexF64},
-                       ::AverageGate)::Float64
+                       ::PropAverage)::Float64
     _check_square(U, "U"); _check_square(U_target, "U_target")
     size(U) == size(U_target) || throw(DimensionMismatch(
         "U $(size(U)) ≠ U_target $(size(U_target))"))
@@ -309,7 +342,7 @@ function gate_fidelity(U::Matrix{ComplexF64}, U_target::Matrix{ComplexF64},
 end
 
 function gate_fidelity(U::Matrix{ComplexF64}, U_target::Matrix{ComplexF64},
-                       ::ModulusGate)::Float64
+                       ::PropModulus)::Float64
     _check_square(U, "U"); _check_square(U_target, "U_target")
     size(U) == size(U_target) || throw(DimensionMismatch(
         "U $(size(U)) ≠ U_target $(size(U_target))"))
@@ -403,11 +436,11 @@ Type-dispatched version of `fidelity_grad_prefactor`.  Branch-free and
 type-stable — the compiler specialises on `metric` at call time.
 """
 @inline fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64, dt_pwr::Float64,
-                                 ::RealOverlap)    = dt_pwr * imag(inner)
+                                 ::StateReal)    = dt_pwr * imag(inner)
 @inline fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64, dt_pwr::Float64,
-                                 ::SquaredOverlap) = 2 * dt_pwr * imag(conj(z) * inner)
+                                 ::StateSquared) = 2 * dt_pwr * imag(conj(z) * inner)
 @inline function fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64, dt_pwr::Float64,
-                                          ::ModulusOverlap)
+                                          ::StateModulus)
     absz = abs(z)
     absz < 1e-14 && return 0.0
     # ∂|z|/∂u = Re(z̄ ∂z)/|z| = dt_pwr · Im(z̄ · inner)/|z|  (∂z = −i·dt_pwr·inner).
@@ -417,17 +450,17 @@ type-stable — the compiler specialises on `metric` at call time.
 end
 
 # ── Gate metrics whose chain factor matches the corresponding state metric ──
-# NormalizedGate: F = |z|² (same chain factor as SquaredOverlap).
+# PropSquared: F = |z|² (same chain factor as StateSquared).
 @inline fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64, dt_pwr::Float64,
-                                 ::NormalizedGate) = 2 * dt_pwr * imag(conj(z) * inner)
-# RealGate: F = Re(z) (same chain factor as RealOverlap).
+                                 ::PropSquared) = 2 * dt_pwr * imag(conj(z) * inner)
+# PropReal: F = Re(z) (same chain factor as StateReal).
 @inline fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64, dt_pwr::Float64,
-                                 ::RealGate)      = dt_pwr * imag(inner)
+                                 ::PropReal)      = dt_pwr * imag(inner)
 
 # ── New metric prefactors ────────────────────────────────────────────────────
 # Modulus-of-gate-overlap: F = |z|, ∂F/∂u = dt_pwr · Im(inner / |z|).
 @inline function fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64,
-                                          dt_pwr::Float64, ::ModulusGate)
+                                          dt_pwr::Float64, ::PropModulus)
     absz = abs(z)
     absz < 1e-14 && return 0.0
     # ∂|z|/∂u = Re(z̄ ∂z)/|z| = dt_pwr · Im(z̄ · inner)/|z|  (∂z = −i·dt_pwr·inner).
@@ -436,27 +469,27 @@ end
     return dt_pwr * imag(conj(z) * inner) / absz
 end
 
-# AverageGate: F_avg = (d·F_norm + 1)/(d+1) is an affine function of the process
+# PropAverage: F_avg = (d·F_norm + 1)/(d+1) is an affine function of the process
 # fidelity F_norm = |z|², so ∂F_avg = d/(d+1) · ∂F_norm.  The chain factor here is
-# the NormalizedGate one; the dimension-dependent d/(d+1) scale is applied by
+# the PropSquared one; the dimension-dependent d/(d+1) scale is applied by
 # `compute_gradient_gate` (which knows `dim`).
 @inline fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64, dt_pwr::Float64,
-                                 ::AverageGate) = 2 * dt_pwr * imag(conj(z) * inner)
+                                 ::PropAverage) = 2 * dt_pwr * imag(conj(z) * inner)
 
 # Linear DM fidelity (Re Tr(ρ† σ)) for closed-system pure ρ_T:
 # F = Re|⟨ψ_T|ψ⟩|² = |⟨ψ_T|ψ⟩|² is real and ≥ 0, so the chain factor
-# matches SquaredOverlap: ∂F/∂u = 2 · dt_pwr · Im(z̄ · inner).
+# matches StateSquared: ∂F/∂u = 2 · dt_pwr · Im(z̄ · inner).
 @inline fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64, dt_pwr::Float64,
-                                 ::LinearDMFidelity)  = 2 * dt_pwr * imag(conj(z) * inner)
+                                 ::DMReal)  = 2 * dt_pwr * imag(conj(z) * inner)
 
 # Modulus DM fidelity: F = |z_DM| with z_DM = |z_S|² ≥ 0 ⇒ identical to
-# SquaredOverlap when ρ_T is pure (closed system).
+# StateSquared when ρ_T is pure (closed system).
 @inline fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64, dt_pwr::Float64,
-                                 ::ModulusDMFidelity) = 2 * dt_pwr * imag(conj(z) * inner)
+                                 ::DMModulus) = 2 * dt_pwr * imag(conj(z) * inner)
 
 # Squared DM fidelity: F = |z_DM|² = |z_S|⁴, ∂F/∂u = 4|z_S|² · dt_pwr · Im(z̄·inner).
 @inline function fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64,
-                                          dt_pwr::Float64, ::SquaredDMFidelity)
+                                          dt_pwr::Float64, ::DMSquared)
     return 4 * abs2(z) * dt_pwr * imag(conj(z) * inner)
 end
 
@@ -471,8 +504,9 @@ function fidelity_grad_prefactor(::ComplexF64, ::ComplexF64, ::Float64,
         "$(nameof(typeof(metric))) has no closed-form GRAPE gradient. " *
         "Use it as a forward figure of merit with a derivative-free optimizer " *
         "(:cmaes, :pso, :de, :nelder_mead), or choose a differentiable metric: " *
-        "gates → :normalized, :real, :average, :modulus; " *
-        "states → :real, :square, :modulus, :dm_linear, :dm_real, :dm_square, :dm_modulus."))
+        "gates → :prop_real, :prop_modulus, :prop_squared, :prop_average; " *
+        "states → :state_real, :state_modulus, :state_squared, " *
+        ":dm_real, :dm_modulus, :dm_squared."))
 end
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -484,19 +518,20 @@ end
 
 All valid `type` symbols accepted by [`state_fidelity`](@ref).
 
-| Symbol        | Formula                                     | Range    | Notes                        |
-|:------------- |:------------------------------------------- |:-------- |:---------------------------- |
-| `:real`       | Re(⟨ψ_t\\|ψ(T)⟩)                           | [−1, 1]  | Default. Phase-coherent.     |
-| `:square`     | \\|⟨ψ_t\\|ψ(T)⟩\\|²                        | [0, 1]   | Phase-insensitive.           |
-| `:modulus`    | \\|⟨ψ_t\\|ψ(T)⟩\\|                         | [0, 1]   | Non-smooth at zero.          |
-| `:dm_uhlmann` | (Tr√(√ρ σ √ρ))²                             | [0, 1]   | Mixed states / Lindblad.     |
-| `:dm_linear`  | Re Tr(ρ† σ)                                  | [0, 1]   | Fast; pure-state approx.     |
+| Symbol           | Paper    | Formula                       | Range    | Notes                     |
+|:---------------- |:-------- |:----------------------------- |:-------- |:------------------------- |
+| `:state_real`    | Φ^S_R    | Re⟨ψ_t\\|ψ(T)⟩                | [−1, 1]  | Default. Phase-coherent.  |
+| `:state_modulus` | Φ^S_M    | \\|⟨ψ_t\\|ψ(T)⟩\\|             | [0, 1]   | Non-smooth at zero.       |
+| `:state_squared` | Φ^S_Q    | \\|⟨ψ_t\\|ψ(T)⟩\\|²            | [0, 1]   | Phase-insensitive.        |
+| `:dm_real`       | Φ^D_R    | Re Tr(ρ† σ)                   | [0, 1]   | Fast; pure-state approx.  |
+| `:dm_modulus`    | Φ^D_M    | \\|Tr(ρ† σ)\\|                  | [0, 1]   |                           |
+| `:dm_squared`    | Φ^D_Q    | \\|Tr(ρ† σ)\\|²                 | [0, 1]   |                           |
+| `:dm_uhlmann`    | Φ^D_Uhl  | (Tr√(√ρ σ √ρ))²               | [0, 1]   | Mixed states / Lindblad.  |
 """
-const STATE_FIDELITY_TYPES = (:real, :square, :modulus, :dm_uhlmann, :dm_linear,
-                              :dm_real, :dm_square, :dm_modulus)
+const STATE_FIDELITY_TYPES = _STATE_FN_METRICS
 
 """
-    state_fidelity(ψ_targ, ψ_final; type::Symbol = :real) -> Float64
+    state_fidelity(ψ_targ, ψ_final; type::Symbol = :state_real) -> Float64
 
 Compute a scalar fidelity between target state `ψ_targ` and achieved state `ψ_final`.
 
@@ -507,12 +542,12 @@ Compute a scalar fidelity between target state `ψ_targ` and achieved state `ψ_
 
 # Examples
 ```julia
-F = state_fidelity(ρtg, ψ)                       # :real (default)
-F = state_fidelity(ρtg, ψ; type = :square)
+F = state_fidelity(ρtg, ψ)                       # :state_real (default)
+F = state_fidelity(ρtg, ψ; type = :state_squared)
 F = state_fidelity(ρ_mat, σ_mat; type = :dm_uhlmann)
 ```
 """
-function state_fidelity(ψ_targ, ψ_final; type::Symbol = :real)::Float64
+function state_fidelity(ψ_targ, ψ_final; type::Symbol = :state_real)::Float64
     return state_fidelity(ψ_targ, ψ_final, _state_symbol_to_metric(type))
 end
 
@@ -530,7 +565,7 @@ function _sf_uhlmann(rho::AbstractMatrix, sigma::AbstractMatrix)::Float64
     return clamp((sum(sqrt.(max.(μ, 0.0))))^2, 0.0, 1.0)
 end
 
-# ── :dm_linear — Re Tr(ρ† σ) ──────────────────────────────────────────────
+# ── :dm_real — Re Tr(ρ† σ) ──────────────────────────────────────────────
 function _sf_linear(rho::AbstractMatrix, sigma::AbstractMatrix)::Float64
     _check_square(rho, "rho"); _check_square(sigma, "sigma")
     return clamp(real(tr(rho' * sigma)), 0.0, 1.0)
@@ -561,26 +596,30 @@ dm_fidelity(rho::Matrix{ComplexF64}, sigma::Matrix{ComplexF64})::Float64 =
 """
     GATE_FIDELITY_TYPES :: Tuple
 
-| Symbol        | Formula                                         |
-|:------------- |:----------------------------------------------- |
-| `:normalized` | \\|Tr(U†_t U)\\|²/dim²  (process fidelity)     |
-| `:real`       | Re[Tr(U†_t U)]/dim                              |
-| `:average`    | (dim·F_normalized + 1)/(dim+1)  (Haar average) |
+All valid `type` symbols accepted by [`gate_fidelity`](@ref).
+
+| Symbol          | Paper    | Formula                                    |
+|:--------------- |:-------- |:------------------------------------------ |
+| `:prop_real`    | Φ^P_R    | Re[Tr(U†_t U)]/dim                         |
+| `:prop_modulus` | Φ^P_M    | \\|Tr(U†_t U)\\|/dim                       |
+| `:prop_squared` | Φ^P_Q    | \\|Tr(U†_t U)\\|²/dim²  (process fidelity) |
+| `:prop_average` | Φ^P_avg  | (dim·Φ^P_Q + 1)/(dim+1)  (Haar average)    |
 """
-const GATE_FIDELITY_TYPES = (:normalized, :real, :average, :modulus)
+const GATE_FIDELITY_TYPES = _GATE_FN_METRICS
 
 """
-    gate_fidelity(U, U_target; type::Symbol = :normalized) -> Float64
+    gate_fidelity(U, U_target; type::Symbol = :prop_squared) -> Float64
 
 Gate fidelity between achieved propagator `U` and target `U_target`.
 
 # Types
-- `:normalized` — |Tr(U†_t U)|²/dim²
-- `:real`       — Re[Tr(U†_t U)]/dim
-- `:average`    — (dim·F_norm + 1)/(dim+1): average over Haar-random inputs
+- `:prop_squared` — Φ^P_Q, |Tr(U†_t U)|²/dim² (default)
+- `:prop_real`    — Φ^P_R, Re[Tr(U†_t U)]/dim
+- `:prop_modulus` — Φ^P_M, |Tr(U†_t U)|/dim
+- `:prop_average` — Φ^P_avg, (dim·Φ^P_Q + 1)/(dim+1): average over Haar-random inputs
 """
 function gate_fidelity(U::Matrix{ComplexF64}, U_target::Matrix{ComplexF64};
-                       type::Symbol = :normalized)::Float64
+                       type::Symbol = :prop_squared)::Float64
     return gate_fidelity(U, U_target, _gate_symbol_to_metric(type))
 end
 
@@ -605,42 +644,49 @@ Chain-rule coefficient ∂F/∂w[k,n] for the GRAPE adjoint method.
 - `z`      — complex overlap ⟨ψ_targ|ψ(T)⟩
 - `inner`  — inner product ⟨λ[n+1]|Op[k]|ψ[n]⟩
 - `dt_pwr` — scalar = dt[n] × pwr_level (rad/s × s = dimensionless)
-- `type`   — fidelity type (must match the type used to compute F)
+- `type`   — fidelity metric (must match the metric used to compute F)
 
-| `type`     | Gradient formula                             |
-|:---------- |:-------------------------------------------- |
-| `:real`    | dt_pwr · Im(inner)                           |
-| `:square`  | 2 · dt_pwr · Im(z̄ · inner)                 |
-| `:modulus` | dt_pwr · Im(inner / |z|)   (0 if |z| < ε)  |
+| `type`                            | Gradient formula                            |
+|:--------------------------------- |:------------------------------------------- |
+| `:state_real`, `:prop_real`       | dt_pwr · Im(inner)                          |
+| `:state_squared`, `:prop_squared` | 2 · dt_pwr · Im(z̄ · inner)                 |
+| `:state_modulus`, `:prop_modulus` | dt_pwr · Im(z̄ · inner)/\\|z\\|  (0 if \\|z\\| < ε) |
+| `:dm_real`, `:dm_modulus`         | 2 · dt_pwr · Im(z̄ · inner)  (pure ρ_T)     |
+| `:dm_squared`                     | 4\\|z\\|² · dt_pwr · Im(z̄ · inner)  (pure ρ_T) |
 
-Other types raise `ArgumentError` (density-matrix fidelities require
-Liouville-space adjoint gradients, not implemented here).
+Other metrics raise `ArgumentError` (mixed-state density-matrix fidelities
+require Liouville-space adjoint gradients — see `lindblad_grad_prefactor`).
 """
 @inline function fidelity_grad_prefactor(z::ComplexF64,
                                           inner::ComplexF64,
                                           dt_pwr::Float64;
                                           type::Symbol)::Float64
-    if type === :real
-        return fidelity_grad_prefactor(z, inner, dt_pwr, REAL_OVERLAP)
-    elseif type === :square
-        return fidelity_grad_prefactor(z, inner, dt_pwr, SQUARED_OVERLAP)
-    elseif type === :modulus
-        return fidelity_grad_prefactor(z, inner, dt_pwr, MODULUS_OVERLAP)
-    elseif type === :gate_modulus
-        return fidelity_grad_prefactor(z, inner, dt_pwr, MODULUS_GATE)
-    elseif type === :dm_real || type === :dm_linear
-        return fidelity_grad_prefactor(z, inner, dt_pwr, LINEAR_DM)
-    elseif type === :dm_square
-        return fidelity_grad_prefactor(z, inner, dt_pwr, SQUARED_DM)
+    if type === :state_real
+        return fidelity_grad_prefactor(z, inner, dt_pwr, STATE_REAL)
+    elseif type === :state_squared
+        return fidelity_grad_prefactor(z, inner, dt_pwr, STATE_SQUARED)
+    elseif type === :state_modulus
+        return fidelity_grad_prefactor(z, inner, dt_pwr, STATE_MODULUS)
+    elseif type === :prop_real
+        return fidelity_grad_prefactor(z, inner, dt_pwr, PROP_REAL)
+    elseif type === :prop_squared
+        return fidelity_grad_prefactor(z, inner, dt_pwr, PROP_SQUARED)
+    elseif type === :prop_modulus
+        return fidelity_grad_prefactor(z, inner, dt_pwr, PROP_MODULUS)
+    elseif type === :dm_real
+        return fidelity_grad_prefactor(z, inner, dt_pwr, DM_REAL)
+    elseif type === :dm_squared
+        return fidelity_grad_prefactor(z, inner, dt_pwr, DM_SQUARED)
     elseif type === :dm_modulus
-        return fidelity_grad_prefactor(z, inner, dt_pwr, MODULUS_DM)
+        return fidelity_grad_prefactor(z, inner, dt_pwr, DM_MODULUS)
     else
-        throw(ArgumentError(
-            "fidelity_grad_prefactor: ':$type' has no Hilbert-space adjoint " *
-            "GRAPE formula. Supported: :real, :square, :modulus, :gate_modulus, " *
-            ":dm_real, :dm_linear, :dm_square, :dm_modulus"))
+        return fidelity_grad_prefactor(z, inner, dt_pwr;
+            type = canonical_metric(type, _GRAD_PREFACTOR_METRICS;
+                                    context = "fidelity_grad_prefactor"))
     end
 end
+
+const _GRAD_PREFACTOR_METRICS = (STATE_METRICS..., DM_METRICS..., PROP_METRICS...)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Section 3 — Ensemble Fidelities
@@ -650,7 +696,7 @@ end
     ensemble_fidelity(ψ_finals, ψ_targs;
                       weights  = nothing,
                       mode     :: Symbol = :mean,
-                      fid_type :: Symbol = :real) -> Float64
+                      fid_type :: Symbol = :state_real) -> Float64
 
 Aggregate state fidelity over an ensemble of (final state, target) pairs.
 
@@ -666,7 +712,7 @@ Aggregate state fidelity over an ensemble of (final state, target) pairs.
 
 # Example
 ```julia
-F = ensemble_fidelity(ψ_list, fill(ρtg, N); mode=:mean, fid_type=:real)
+F = ensemble_fidelity(ψ_list, fill(ρtg, N); mode=:mean, fid_type=:state_real)
 F = ensemble_fidelity(ψ_list, ρtg_list;    mode=:minimax)
 ```
 """
@@ -674,7 +720,7 @@ function ensemble_fidelity(ψ_finals::AbstractVector,
                             ψ_targs::AbstractVector;
                             weights  = nothing,
                             mode     :: Symbol = :mean,
-                            fid_type :: Symbol = :real)::Float64
+                            fid_type :: Symbol = :state_real)::Float64
     N = length(ψ_finals)
     N == length(ψ_targs) || throw(ArgumentError(
         "ψ_finals has $N elements but ψ_targs has $(length(ψ_targs))"))
@@ -738,12 +784,12 @@ function compute_fidelity(U_total::Matrix{ComplexF64}, target::QuantumTarget)::F
     if target.type == "unitary"
         target.target_unitary === nothing && throw(ArgumentError(
             "target.type is \"unitary\" but target.target_unitary is nothing"))
-        sym = target.metric === :auto ? :normalized : target.metric
+        sym = target.metric === :auto ? :prop_squared : target.metric
         return gate_fidelity(U_total, target.target_unitary; type = sym)
     elseif target.type == "state"
         target.target_state === nothing && throw(ArgumentError(
             "target.type is \"state\" but target.target_state is nothing"))
-        sym = target.metric === :auto ? :square : target.metric
+        sym = target.metric === :auto ? :state_squared : target.metric
         psi_init  = target.initial_state === nothing ?
                         target.target_state : target.initial_state
         psi_final = U_total * psi_init

@@ -131,7 +131,7 @@ using Test, LinearAlgebra, Random
         rho_i  = [rand_state(dim) for _ in 1:2]
         rho_t  = [rand_state(dim) for _ in 1:2]
         dt     = fill(2e-6, n_t)
-        for fid in (:real, :square)
+        for fid in (:state_real, :state_squared)
             ctrl = Pulsar.MRControl(; drifts = drifts, operators = ops,
                 rho_init = rho_i, rho_targ = rho_t, pwr_levels = pwr,
                 pulse_dt = dt, fidelity = fid, verbose = false, fast_path = false)
@@ -212,7 +212,7 @@ using Test, LinearAlgebra, Random
             dt     = fill(2e-6, n_t)
             ctrl = Pulsar.MRControl(; drifts = drifts, operators = ops,
                 rho_init = rho_i, rho_targ = rho_t, pwr_levels = pwr,
-                pulse_dt = dt, fidelity = :square, verbose = false, fast_path = false)
+                pulse_dt = dt, fidelity = :state_squared, verbose = false, fast_path = false)
             w = 0.3 .* randn(n_ctrl, n_t)
             Fc, Gc = Pulsar._grape_cpu(w, ctrl)
             Fg, Gg = Pulsar._grape_batched(w, ctrl, Pulsar.resolve_backend(gpu_dev))
