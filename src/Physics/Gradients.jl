@@ -396,8 +396,8 @@ function compute_gradient_gate(U_total::Matrix{ComplexF64},
             G[j, k] = fidelity_grad_prefactor(Phi, inner_bare, dt, metric)
         end
     end
-    # AverageGate's ∂F differs from the process-fidelity ∂F by a constant d/(d+1).
-    if metric isa AverageGate
+    # StateSquaredHaar's ∂F differs from the process-fidelity ∂F by a constant d/(d+1).
+    if metric isa StateSquaredHaar
         G .*= dim / (dim + 1)
     end
     return G

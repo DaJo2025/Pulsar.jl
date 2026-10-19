@@ -21,7 +21,7 @@
 #   state row  (target = (; psi_init, psi_targ)): :state_squared (Φ^S_Q, default),
 #              :state_real, :state_modulus on z_k = ⟨ψ_targ|ψ_k(T)⟩
 #   prop row   (target = U_targ): :prop_real (Φ^P_R), :prop_modulus, :prop_squared,
-#              :prop_average, :prop_real_quad on z_k = Tr(U_targ† U_k(T))/dim
+#              :state_squared_haar, :prop_real_quad on z_k = Tr(U_targ† U_k(T))/dim
 #   F is the ensemble mean of overlap_fidelity(metric, z_k); the adjoint is exact.
 #
 # Reduces exactly to SU2Propagator.jl for spin_I = 0.5.
@@ -148,7 +148,7 @@ end
 # state row for a (ψ_init → ψ_targ) target, the propagator row for a unitary
 # target.  Listed state-first so the pre-Φ^X_Y name `:state` resolves there.
 const SPINI_METRICS = (:state_squared, :state_real, :state_modulus,
-                       :prop_real, :prop_modulus, :prop_squared, :prop_average,
+                       :prop_real, :prop_modulus, :prop_squared, :state_squared_haar,
                        :prop_real_quad)
 
 _spinI_metric(metric::Symbol) =
@@ -170,7 +170,7 @@ Compute ensemble-averaged spin-I fidelity and exact gradient.
 - `metric`      : any of `SPINI_METRICS` — the state row (`:state_squared`
                   default, `:state_real`, `:state_modulus`) for a state target,
                   the propagator row (`:prop_real`, `:prop_modulus`,
-                  `:prop_squared`, `:prop_average`, `:prop_real_quad`) for a
+                  `:prop_squared`, `:state_squared_haar`, `:prop_real_quad`) for a
                   unitary target.  The pre-Φ^X_Y names `:state` and
                   `:real_trace` are accepted with a deprecation warning.
 

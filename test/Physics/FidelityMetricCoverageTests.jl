@@ -4,7 +4,7 @@
 # Verifies that fidelity metrics can be SELECTED (via target.metric) and drive
 # the shared gradient chokepoint `compute_grape_gradient`, so every gradient-based
 # algorithm and every application that funnels through it gets the chosen metric.
-# Also locks in the PropAverage gradient and the :prop_modulus phase-factor fix.
+# Also locks in the StateSquaredHaar gradient and the :prop_modulus phase-factor fix.
 # ============================================================
 
 using Test, LinearAlgebra
@@ -48,7 +48,7 @@ using Test, LinearAlgebra
         dt, nt = 1e-3, 12
         u = zeros(2, nt); u[1, :] .= 5.0; u[2, :] .= 1.5
         cs = ControlSequence(u, dt, dt*nt, nt)
-        for m in (:auto, :prop_squared, :prop_real, :prop_average, :prop_modulus)
+        for m in (:auto, :prop_squared, :prop_real, :state_squared_haar, :prop_modulus)
             tgt = unitary_target(ComplexF64[0 1; 1 0]; metric = m)
             g  = compute_grape_gradient(sys, cs, tgt)
             gf = fd(sys, u, dt, nt, tgt)
@@ -70,12 +70,12 @@ using Test, LinearAlgebra
         end
     end
 
-    @testset ":prop_average gradient = (d/(d+1)) · process-fidelity gradient" begin
+    @testset ":state_squared_haar gradient = (d/(d+1)) · process-fidelity gradient" begin
         dt, nt = 1e-3, 12
         u = zeros(2, nt); u[1, :] .= 5.0; u[2, :] .= 1.5
         cs = ControlSequence(u, dt, dt*nt, nt)
         g_norm = compute_grape_gradient(sys, cs, unitary_target(ComplexF64[0 1; 1 0]; metric = :prop_squared))
-        g_avg  = compute_grape_gradient(sys, cs, unitary_target(ComplexF64[0 1; 1 0]; metric = :prop_average))
+        g_avg  = compute_grape_gradient(sys, cs, unitary_target(ComplexF64[0 1; 1 0]; metric = :state_squared_haar))
         @test maximum(abs.(g_avg .- (2/3) .* g_norm)) < 1e-12   # d=2 → d/(d+1)=2/3
     end
 
@@ -120,6 +120,10 @@ using Test, LinearAlgebra
         @test state_fidelity(ComplexF64[1, 0], ComplexF64[1, 0]; type = :square) == 1.0
         @test gate_fidelity(σx, σx; type = :normalized) ≈ 1.0
         @test Pulsar.RealOverlap === StateReal
+        @test Pulsar.PropAverage === StateSquaredHaar
+        @test canonical_metric(:prop_average, Pulsar.VALID_GATE_METRICS;
+                               context = "t-prop-average") === :state_squared_haar
+        @test unitary_target(σx; metric = :average).metric === :state_squared_haar
         @test Pulsar.NORMALIZED_GATE === PROP_SQUARED
 
         # A valid name at the wrong level throws instead of being reinterpreted.

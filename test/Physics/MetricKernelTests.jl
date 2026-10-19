@@ -36,7 +36,7 @@ using Random
     @testset "primitive: dF = Re(w · dz)" begin
         rng = MersenneTwister(1)
         h = 1e-7
-        for m in (:prop_real, :prop_modulus, :prop_squared, :prop_average, :prop_real_quad,
+        for m in (:prop_real, :prop_modulus, :prop_squared, :state_squared_haar, :prop_real_quad,
                   :state_real, :state_modulus, :state_squared,
                   :dm_real, :dm_modulus, :dm_squared), _ in 1:20
             z = 0.8 * randn(rng, ComplexF64); dz = randn(rng, ComplexF64)
@@ -51,11 +51,11 @@ using Random
                   Pulsar.pure_state_fidelity(m, z - h * dz)) / (2h)
             @test isapprox(dF, real(Pulsar.pure_state_weight(m, z) * dz); atol = 1e-6)
         end
-        @test overlap_fidelity(:prop_average, 0.0; dim = 2) ≈ 1 / 3
+        @test overlap_fidelity(:state_squared_haar, 0.0; dim = 2) ≈ 1 / 3
         @test overlap_weight(:state_modulus, 0.0) == 0
         @test Pulsar.has_constant_weight(:state_real) && !Pulsar.has_constant_weight(:prop_squared)
         @test_throws ArgumentError overlap_fidelity(:dm_uhlmann, 0.5)
-        @test_throws ArgumentError overlap_fidelity(:prop_average, 0.5)   # needs dim
+        @test_throws ArgumentError overlap_fidelity(:state_squared_haar, 0.5)   # needs dim
     end
 
     @testset "metric arithmetic does not allocate (it runs per step × control)" begin
@@ -73,7 +73,7 @@ using Random
                   (z, x) -> Pulsar.fidelity_grad_prefactor(z, x, 0.5, DM_SQUARED),
                   (z, x) -> Pulsar.fidelity_grad_prefactor(z, x, 0.5; type = :state_squared),
                   (z, x) -> lindblad_grad_prefactor(z, x, 0.5; type = :dm_modulus),
-                  (z, x) -> overlap_weight(:prop_average, z; dim = 4) +
+                  (z, x) -> overlap_weight(:state_squared_haar, z; dim = 4) +
                             Pulsar.pure_state_weight(:dm_real, z) * x)
             loop_alloc(f, 10)
             @test (@allocated loop_alloc(f, 100_000)) < 1_000
@@ -124,7 +124,7 @@ using Random
             @test F ≈ k(φ) atol = 1e-12
             @test relerr(GJ, fd(p -> 1 - k(p), φ)) < 1e-5
         end
-        for m in (:prop_real, :prop_modulus, :prop_squared, :prop_average, :prop_real_quad)
+        for m in (:prop_real, :prop_modulus, :prop_squared, :state_squared_haar, :prop_real_quad)
             k = SpinIKernel(offs, RF, dt, Ival, Ut; metric = m)
             F, GJ = spinI_fidelity_and_grad(k, φ)
             @test F ≈ k(φ) atol = 1e-12
@@ -171,7 +171,7 @@ using Random
             # An SU(2) target: for σx (det −1) Tr(σx†U) is purely imaginary for
             # every SU(2) propagator, so Φ^P_R ≡ 0 and its gradient is 0.
             [(unitary_target(exp(-im * (π / 4) * σx); metric = m), m)
-             for m in (:prop_real, :prop_modulus, :prop_squared, :prop_average)],
+             for m in (:prop_real, :prop_modulus, :prop_squared, :state_squared_haar)],
             [(state_target(ComplexF64[0.6, 0.8im]; psi_init = ComplexF64[1, 0], metric = m), m)
              for m in (:state_real, :state_modulus, :state_squared, :dm_real, :dm_squared)])
         H0 = 2π * 300.0 * Iz; Hc = [Ix, Iy]; dtp = 1e-6; nt = 16

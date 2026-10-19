@@ -13,7 +13,7 @@
 #     real        Re z                      1
 #     modulus     |z|                       z̄/|z|          (0 at z = 0)
 #     squared     |z|²                      2z̄
-#     average     (dim·|z|² + 1)/(dim + 1)  2·dim·z̄/(dim + 1)   (:prop_average)
+#     average     (dim·|z|² + 1)/(dim + 1)  2·dim·z̄/(dim + 1)   (:state_squared_haar)
 #     real_quad   1 − (1 − Re z)²           2(1 − Re z)         (:prop_real_quad)
 #
 # The chain weight is defined by dF = Re(w · dz), so a kernel only needs dz
@@ -26,7 +26,7 @@
 
 Value of fidelity `metric` (a Φ^X_Y name, see [`FIDELITY_METRICS`](@ref)) for a
 complex overlap `z` at the metric's own level. `dim` is needed only for
-`:prop_average`. See also [`overlap_weight`](@ref).
+`:state_squared_haar`. See also [`overlap_weight`](@ref).
 """
 function overlap_fidelity(metric::Symbol, z::Number; dim::Integer = 0)::Float64
     r = _metric_reduction(metric)
@@ -104,7 +104,7 @@ function _metric_reduction(metric::Symbol)::Symbol
     (metric === :prop_real    || metric === :state_real    || metric === :dm_real)    && return :real
     (metric === :prop_squared || metric === :state_squared || metric === :dm_squared) && return :squared
     (metric === :prop_modulus || metric === :state_modulus || metric === :dm_modulus) && return :modulus
-    metric === :prop_average   && return :average
+    metric === :state_squared_haar   && return :average
     metric === :prop_real_quad && return :real_quad
     throw(ArgumentError("Fidelity metric :$metric has no overlap reduction " *
                         "(supported: $(_format_metrics(FIDELITY_METRICS)) except :dm_uhlmann)."))

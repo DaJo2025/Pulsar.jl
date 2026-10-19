@@ -31,7 +31,7 @@ Holds the precomputed scalar ensemble parameters and the SU(2) target.
 - `AT`     : target SU(2) A component, |AT|² + |BT|² = 1
 - `BT`     : target SU(2) B component
 - `metric` : any of `SU2_METRICS` — the propagator row (`:prop_real` default,
-             `:prop_modulus`, `:prop_squared`, `:prop_average`, `:prop_real_quad`)
+             `:prop_modulus`, `:prop_squared`, `:state_squared_haar`, `:prop_real_quad`)
              or the |↑⟩-probe state row (`:state_real`, `:state_modulus`,
              `:state_squared`); see `su2_fidelity_gradient`
 - `N_ens`  : ensemble size (N_off, or N_off × N_amp for robustness)

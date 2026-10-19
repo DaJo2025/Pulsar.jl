@@ -37,7 +37,7 @@ complex overlap `z` is reduced to a real number:
 | `:dm_real`       | `DMReal`       | Φ^D_R     | Re Tr(ρ_t† ρ)                 |
 | `:dm_modulus`    | `DMModulus`    | Φ^D_M     | \\|Tr(ρ_t† ρ)\\|              |
 | `:dm_squared`    | `DMSquared`    | Φ^D_Q     | \\|Tr(ρ_t† ρ)\\|²             |
-| `:prop_average`  | `PropAverage`  | Φ^P_avg   | (dim·Φ^P_Q + 1)/(dim + 1)     |
+| `:state_squared_haar` | `StateSquaredHaar` | ⟨Φ^S_Q⟩_Haar | (dim·Φ^P_Q + 1)/(dim + 1) |
 | `:dm_uhlmann`    | `DMUhlmann`    | Φ^D_Uhl   | (Tr√(√ρ σ √ρ))²               |
 
 The pre-Φ^X_Y type names (`RealOverlap`, `NormalizedGate`, …) remain as
@@ -64,8 +64,13 @@ struct PropModulus  <: AbstractFidelityMetric end
 "Φ^P_Q (Prop-Squared): |Tr(U_t† U)|²/dim²  (standard process fidelity)."
 struct PropSquared  <: AbstractFidelityMetric end
 
-"Φ^P_avg (Prop-Average): (dim·Φ^P_Q + 1)/(dim + 1)  (Haar-average gate fidelity)."
-struct PropAverage  <: AbstractFidelityMetric end
+"""
+⟨Φ^S_Q⟩_Haar: State-Squared averaged over Haar-random input states — the
+average gate fidelity, (dim·Φ^P_Q + 1)/(dim + 1) in closed form. Averaging
+State-Squared over any 2-design of inputs (a qubit's three axis states, a
+complete set of mutually unbiased bases) gives the same number.
+"""
+struct StateSquaredHaar  <: AbstractFidelityMetric end
 
 # ── State level (S) ──────────────────────────────────────────────────────────
 "Φ^S_R (State-Real): Re(⟨ψ_target|ψ_final⟩).  Phase-sensitive, range [−1, 1]."
@@ -153,7 +158,7 @@ end
 const PROP_REAL     = PropReal()
 const PROP_MODULUS  = PropModulus()
 const PROP_SQUARED  = PropSquared()
-const PROP_AVERAGE  = PropAverage()
+const STATE_SQUARED_HAAR  = StateSquaredHaar()
 const STATE_REAL    = StateReal()
 const STATE_MODULUS = StateModulus()
 const STATE_SQUARED = StateSquared()
@@ -166,7 +171,7 @@ const DM_UHLMANN    = DMUhlmann()
 metric_symbol(::PropReal)     = :prop_real
 metric_symbol(::PropModulus)  = :prop_modulus
 metric_symbol(::PropSquared)  = :prop_squared
-metric_symbol(::PropAverage)  = :prop_average
+metric_symbol(::StateSquaredHaar)  = :state_squared_haar
 metric_symbol(::StateReal)    = :state_real
 metric_symbol(::StateModulus) = :state_modulus
 metric_symbol(::StateSquared) = :state_squared
@@ -189,7 +194,7 @@ Base.@deprecate_binding SquaredDMFidelity DMSquared
 Base.@deprecate_binding ModulusDMFidelity DMModulus
 Base.@deprecate_binding NormalizedGate    PropSquared
 Base.@deprecate_binding RealGate          PropReal
-Base.@deprecate_binding AverageGate       PropAverage
+Base.@deprecate_binding AverageGate       StateSquaredHaar
 Base.@deprecate_binding ModulusGate       PropModulus
 Base.@deprecate_binding REAL_OVERLAP      STATE_REAL
 Base.@deprecate_binding SQUARED_OVERLAP   STATE_SQUARED
@@ -200,14 +205,17 @@ Base.@deprecate_binding SQUARED_DM        DM_SQUARED
 Base.@deprecate_binding MODULUS_DM        DM_MODULUS
 Base.@deprecate_binding NORMALIZED_GATE   PROP_SQUARED
 Base.@deprecate_binding REAL_GATE         PROP_REAL
-Base.@deprecate_binding AVERAGE_GATE      PROP_AVERAGE
+Base.@deprecate_binding AVERAGE_GATE      STATE_SQUARED_HAAR
+# `:prop_average` / PropAverage were the names of ⟨Φ^S_Q⟩_Haar on 2026-10-19 only.
+Base.@deprecate_binding PropAverage       StateSquaredHaar
+Base.@deprecate_binding PROP_AVERAGE      STATE_SQUARED_HAAR
 Base.@deprecate_binding MODULUS_GATE      PROP_MODULUS
 
 # ── Symbol → metric conversion (used by the Symbol-keyword wrappers) ────────
 # Canonical names are matched first; anything else (including a pre-Φ^X_Y
 # name) goes through `canonical_metric`, which translates or throws.
 const _STATE_FN_METRICS = (STATE_METRICS..., DM_METRICS..., :dm_uhlmann)
-const _GATE_FN_METRICS  = (PROP_METRICS..., :prop_average)
+const _GATE_FN_METRICS  = (PROP_METRICS..., :state_squared_haar)
 
 function _state_symbol_to_metric(sym::Symbol)::AbstractFidelityMetric
     sym === :state_real    && return STATE_REAL
@@ -225,7 +233,7 @@ function _gate_symbol_to_metric(sym::Symbol)::AbstractFidelityMetric
     sym === :prop_squared && return PROP_SQUARED
     sym === :prop_real    && return PROP_REAL
     sym === :prop_modulus && return PROP_MODULUS
-    sym === :prop_average && return PROP_AVERAGE
+    sym === :state_squared_haar && return STATE_SQUARED_HAAR
     return _gate_symbol_to_metric(
         canonical_metric(sym, _GATE_FN_METRICS; context = "gate_fidelity"))
 end
@@ -319,11 +327,11 @@ Type-dispatched gate fidelity.  Prefer this form in new code.
 # Example
 ```julia
 F = gate_fidelity(U_opt, U_target, PROP_SQUARED)
-F = gate_fidelity(U_opt, U_target, PROP_AVERAGE)
+F = gate_fidelity(U_opt, U_target, STATE_SQUARED_HAAR)
 ```
 """
 function gate_fidelity(U::Matrix{ComplexF64}, U_target::Matrix{ComplexF64},
-                       m::Union{_PropLevelMetric, PropAverage})::Float64
+                       m::Union{_PropLevelMetric, StateSquaredHaar})::Float64
     _check_square(U, "U"); _check_square(U_target, "U_target")
     size(U) == size(U_target) || throw(DimensionMismatch(
         "U $(size(U)) ≠ U_target $(size(U_target))"))
@@ -432,12 +440,12 @@ type-stable — the compiler specialises on `metric` at call time.
                                  m::_DMLevelMetric) =
     dt_pwr * imag(pure_state_weight(metric_symbol(m), z) * inner)
 
-# PropAverage: F_avg = (d·Φ^P_Q + 1)/(d+1) is affine in Φ^P_Q, so ∂F_avg =
+# StateSquaredHaar: F_avg = (d·Φ^P_Q + 1)/(d+1) is affine in Φ^P_Q, so ∂F_avg =
 # d/(d+1)·∂Φ^P_Q.  The chain factor here is the PropSquared one; the
 # dimension-dependent d/(d+1) scale is applied by `compute_gradient_gate`
 # (which knows `dim`).
 @inline fidelity_grad_prefactor(z::ComplexF64, inner::ComplexF64, dt_pwr::Float64,
-                                 ::PropAverage) =
+                                 ::StateSquaredHaar) =
     fidelity_grad_prefactor(z, inner, dt_pwr, PROP_SQUARED)
 
 # Catch-all: metrics with no closed-form first-order GRAPE gradient (e.g. the
@@ -451,7 +459,7 @@ function fidelity_grad_prefactor(::ComplexF64, ::ComplexF64, ::Float64,
         "$(nameof(typeof(metric))) has no closed-form GRAPE gradient. " *
         "Use it as a forward figure of merit with a derivative-free optimizer " *
         "(:cmaes, :pso, :de, :nelder_mead), or choose a differentiable metric: " *
-        "gates → :prop_real, :prop_modulus, :prop_squared, :prop_average; " *
+        "gates → :prop_real, :prop_modulus, :prop_squared, :state_squared_haar; " *
         "states → :state_real, :state_modulus, :state_squared, " *
         ":dm_real, :dm_modulus, :dm_squared."))
 end
@@ -544,7 +552,7 @@ All valid `type` symbols accepted by [`gate_fidelity`](@ref).
 | `:prop_real`    | Φ^P_R    | Re[Tr(U†_t U)]/dim                         |
 | `:prop_modulus` | Φ^P_M    | \\|Tr(U†_t U)\\|/dim                       |
 | `:prop_squared` | Φ^P_Q    | \\|Tr(U†_t U)\\|²/dim²  (process fidelity) |
-| `:prop_average` | Φ^P_avg  | (dim·Φ^P_Q + 1)/(dim+1)  (Haar average)    |
+| `:state_squared_haar` | ⟨Φ^S_Q⟩_Haar | (dim·Φ^P_Q + 1)/(dim+1)  (average gate fidelity) |
 """
 const GATE_FIDELITY_TYPES = _GATE_FN_METRICS
 
@@ -557,7 +565,8 @@ Gate fidelity between achieved propagator `U` and target `U_target`.
 - `:prop_squared` — Φ^P_Q, |Tr(U†_t U)|²/dim² (default)
 - `:prop_real`    — Φ^P_R, Re[Tr(U†_t U)]/dim
 - `:prop_modulus` — Φ^P_M, |Tr(U†_t U)|/dim
-- `:prop_average` — Φ^P_avg, (dim·Φ^P_Q + 1)/(dim+1): average over Haar-random inputs
+- `:state_squared_haar` — ⟨Φ^S_Q⟩_Haar, (dim·Φ^P_Q + 1)/(dim+1): State-Squared
+  averaged over Haar-random inputs (the average gate fidelity)
 """
 function gate_fidelity(U::Matrix{ComplexF64}, U_target::Matrix{ComplexF64};
                        type::Symbol = :prop_squared)::Float64

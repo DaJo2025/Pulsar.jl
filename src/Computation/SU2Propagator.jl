@@ -135,7 +135,7 @@ end
 # Metrics the SU(2) kernel implements (see `su2_fidelity_gradient`): the
 # propagator row (z_P = Tr(U_t†U)/2 = Re z exactly in SU(2)) and the state row
 # of the |↑⟩ probe (z itself).
-const SU2_METRICS = (:prop_real, :prop_modulus, :prop_squared, :prop_average,
+const SU2_METRICS = (:prop_real, :prop_modulus, :prop_squared, :state_squared_haar,
                      :prop_real_quad, :state_real, :state_modulus, :state_squared)
 
 _su2_metric(metric::Symbol) =
@@ -152,7 +152,7 @@ to the phase vector `phi`, using the co-state (adjoint) method.
 **Fidelity metrics** (`z_k = AT* Ak(T) + BT* Bk(T) = ⟨↑|U_targ† U_k|↑⟩`). In
 SU(2) the propagator overlap is exactly `Tr(U_targ† U_k)/2 = Re z_k`, so:
 - propagator row on `Re z_k`: `:prop_real` (Φ^P_R, default), `:prop_modulus`
-  (Φ^P_M), `:prop_squared` (Φ^P_Q = (Re z_k)²), `:prop_average`
+  (Φ^P_M), `:prop_squared` (Φ^P_Q = (Re z_k)²), `:state_squared_haar`
   ((2Φ^P_Q + 1)/3), `:prop_real_quad` (1 − (1 − Φ^P_R)², the Kobzar form);
 - state row of the |↑⟩ probe on `z_k`: `:state_real` (= Φ^P_R here),
   `:state_modulus`, `:state_squared` (|⟨U_targ ↑|U_k ↑⟩|², not Φ^P_Q).

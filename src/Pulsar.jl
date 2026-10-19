@@ -468,10 +468,10 @@ export overlap_fidelity, overlap_weight
 # (RealOverlap, NormalizedGate, REAL_OVERLAP, …) are exported as deprecated
 # bindings from Physics/Objectives.jl.
 export AbstractFidelityMetric
-export PropReal, PropModulus, PropSquared, PropAverage
+export PropReal, PropModulus, PropSquared, StateSquaredHaar
 export StateReal, StateModulus, StateSquared
 export DMReal, DMModulus, DMSquared, DMUhlmann
-export PROP_REAL, PROP_MODULUS, PROP_SQUARED, PROP_AVERAGE
+export PROP_REAL, PROP_MODULUS, PROP_SQUARED, STATE_SQUARED_HAAR
 export STATE_REAL, STATE_MODULUS, STATE_SQUARED
 export DM_REAL, DM_MODULUS, DM_SQUARED, DM_UHLMANN
 # Theme 4 — extended fidelity metrics

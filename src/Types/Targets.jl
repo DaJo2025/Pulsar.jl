@@ -48,7 +48,9 @@ For `type == "state"` the default (`:auto` = `:state_squared`, Φ^S_Q) is
 #   S  state        :state_real      :state_modulus    :state_squared    z = ⟨ψ_t|ψ⟩
 #   D  density mat. :dm_real         :dm_modulus       :dm_squared       z = Tr(ρ_t† ρ)
 #
-# Off-grid: :prop_average   = (dim·Φ^P_Q + 1)/(dim + 1)  (Haar-average gate fidelity)
+# Off-grid: :state_squared_haar = (dim·Φ^P_Q + 1)/(dim + 1) — State-Squared averaged
+#                                   over Haar-random input states (the average gate
+#                                   fidelity), evaluated in closed form from z_P
 #           :prop_real_quad = 1 − (1 − Φ^P_R)²            (Kobzar quadratic form)
 #           :dm_uhlmann     = (Tr√(√ρ σ √ρ))²             (Uhlmann–Jozsa)
 #
@@ -62,7 +64,7 @@ const PROP_METRICS     = (:prop_real,  :prop_modulus,  :prop_squared)
 const STATE_METRICS    = (:state_real, :state_modulus, :state_squared)
 const DM_METRICS       = (:dm_real,    :dm_modulus,    :dm_squared)
 const FIDELITY_METRICS = (PROP_METRICS..., STATE_METRICS..., DM_METRICS...,
-                          :prop_average, :prop_real_quad, :dm_uhlmann)
+                          :state_squared_haar, :prop_real_quad, :dm_uhlmann)
 
 const _METRIC_LABELS = Dict{Symbol,String}(
     :prop_real      => "Φ^P_R (Prop-Real)",
@@ -74,7 +76,7 @@ const _METRIC_LABELS = Dict{Symbol,String}(
     :dm_real        => "Φ^D_R (DM-Real)",
     :dm_modulus     => "Φ^D_M (DM-Modulus)",
     :dm_squared     => "Φ^D_Q (DM-Squared)",
-    :prop_average   => "Φ^P_avg (Prop-Average)",
+    :state_squared_haar => "⟨Φ^S_Q⟩_Haar (State-Squared averaged over Haar inputs = average gate fidelity)",
     :prop_real_quad => "1 − (1 − Φ^P_R)² (Prop-Real-Quadratic)",
     :dm_uhlmann     => "Φ^D_Uhl (DM-Uhlmann)",
 )
@@ -90,7 +92,10 @@ metric_label(metric::Symbol)::String = get(_METRIC_LABELS, metric, ":$metric")
 # :prop / :state / :dm, or `nothing` for anything off the grid (e.g. :auto).
 # Symbol comparisons only: kernels call this per ensemble member.
 function _metric_level(metric::Symbol)
-    (metric in PROP_METRICS || metric === :prop_average || metric === :prop_real_quad) &&
+    # :state_squared_haar averages State-Squared over Haar-random inputs, but its
+    # closed form is evaluated from the propagator overlap z_P, so kernels treat
+    # it as propagator-row.
+    (metric in PROP_METRICS || metric === :state_squared_haar || metric === :prop_real_quad) &&
         return :prop
     metric in STATE_METRICS && return :state
     (metric in DM_METRICS || metric === :dm_uhlmann) && return :dm
@@ -111,7 +116,8 @@ const _LEGACY_METRIC_NAMES = Dict{Tuple{Symbol,Symbol},Symbol}(
     (:prop,  :gate_modulus) => :prop_modulus,    # fidelity_grad_prefactor
     (:prop,  :normalized)   => :prop_squared,    # unitary_target, gate_fidelity
     (:prop,  :square)       => :prop_squared,    # grape_gate_kernel
-    (:prop,  :average)      => :prop_average,    # unitary_target, gate_fidelity
+    (:prop,  :average)      => :state_squared_haar,  # unitary_target, gate_fidelity
+    (:prop,  :prop_average) => :state_squared_haar,  # canonical 2026-10-19 only
     (:prop,  :real_quad)    => :prop_real_quad,  # grape_gate_kernel
     (:state, :real)         => :state_real,      # state_target, MRControl, state_fidelity
     (:state, :modulus)      => :state_modulus,   # state_target, MRControl, state_fidelity
@@ -172,7 +178,7 @@ end
 # Uhlmann fidelity (`:dm_uhlmann`) needs an actual density matrix, so it
 # belongs to the open-system / Lindblad path, not a pure-state target.
 const VALID_STATE_METRICS = (:auto, STATE_METRICS..., DM_METRICS...)
-const VALID_GATE_METRICS  = (:auto, PROP_METRICS..., :prop_average)
+const VALID_GATE_METRICS  = (:auto, PROP_METRICS..., :state_squared_haar)
 
 struct QuantumTarget
     type           :: String
@@ -286,7 +292,8 @@ Construct a `QuantumTarget` representing a desired unitary gate U_target.
 - `U` — target unitary matrix of size `dim × dim`; must be square and approximately
   unitary within a tolerance of `1e-10`.
 - `metric` — `:auto` (= `:prop_squared`, Φ^P_Q), `:prop_real`, `:prop_modulus`,
-  or `:prop_average`.  See [`FIDELITY_METRICS`](@ref).
+  or `:state_squared_haar` (State-Squared averaged over Haar-random inputs, the
+  average gate fidelity).  See [`FIDELITY_METRICS`](@ref).
 
 # Returns
 A `QuantumTarget` with `type == "unitary"`.
