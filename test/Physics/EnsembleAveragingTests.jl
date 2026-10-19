@@ -257,9 +257,18 @@ using Statistics
     end
 
     @testset "full gradient vs finite differences" begin
-        rng = MersenneTwister(31)
-        # dt = 2.5 µs (dt·‖H‖ ≈ 1e-2) keeps the first-order GRAPE error under the tolerance
-        sys, ctrl = random_problem(rng, 2, 2, 120; T = 0.3e-3, amp = 300.0)
+        # A deterministic problem: `randn` streams are not stable across Julia
+        # versions, and a different draw changes the first-order GRAPE error (a
+        # random pulse passed on 1.9/1.10 and failed on 1.13). dt = 0.625 µs,
+        # dt·‖H‖ ≈ 2e-3, puts the worst case (DM-Squared, worst-case member) at
+        # relerr ≈ 2e-3 — the error halves with dt, i.e. it is first-order GRAPE.
+        # The FD step is 1e-2 because the amplitudes are in Hz (~300): with 1e-6
+        # the change in F (~1e-11) sinks into the propagators' roundoff.
+        n_t = 480
+        sys = quantum_system(2π * 100.0 .* (0.6 .* σx .+ 0.8 .* σz) ./ 2, [2π .* Ix, 2π .* Iy])
+        tt = ((1:n_t) .- 0.5) ./ n_t
+        ctrl = ControlSequence(hcat(300 .* sin.(2π .* 2 .* tt .+ 0.3), 250 .* cos.(2π .* 3 .* tt)),
+                               0.3e-3 / n_t, n_t)
         V = exp(-im * π / 2 * σx)
         axes = (OffsetAxis([-200.0, 150.0]; operator = Iz), DriveScaleAxis([0.9, 1.05]))
         for (tgt, probes, metric) in (
@@ -275,7 +284,7 @@ using Statistics
                                         softmin_beta = 10.0)
                 F, G = ensemble_averaging(ens, sys, ctrl, tgt; metric)
                 f(x) = ensemble_averaging(ens, sys, with_amps(ctrl, x), tgt; metric, gradient = false)
-                Gfd = fd(f, vec(copy(ctrl.amplitudes)))
+                Gfd = fd(f, vec(copy(ctrl.amplitudes)); h = 1e-2)
                 @test relerr(vec(permutedims(G)), Gfd) < 5e-3
             end
         end
@@ -285,6 +294,6 @@ using Statistics
         tgt = unitary_target(V; metric = :prop_squared)
         F, G = ensemble_averaging(ens, sys, ctrl, tgt)
         fs(x) = ensemble_averaging(ens, sys, with_amps(ctrl, x), tgt; gradient = false)
-        @test relerr(vec(permutedims(G)), fd(fs, vec(copy(ctrl.amplitudes)))) < 5e-3
+        @test relerr(vec(permutedims(G)), fd(fs, vec(copy(ctrl.amplitudes)); h = 1e-2)) < 5e-3
     end
 end
