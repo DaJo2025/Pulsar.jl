@@ -367,6 +367,10 @@ function lbfgsb_optimize(
         # L-BFGS direction
         m_used = length(S)
         _lbfgs_direction!(d, g, S, Y, ρ_list, m_used)
+        if !all(isfinite, d)                 # degenerate curvature model
+            empty!(S); empty!(Y); empty!(ρ_list)
+            @. d = -g
+        end
 
         # Project direction: free only on inactive constraints
         for i in 1:n
@@ -395,6 +399,19 @@ function lbfgsb_optimize(
         α, f_new = _qn_ls!(θ_t, g_ls, f, grad!, θ, d, g, f_cur;
                            c1=wolfe_c1, c2=wolfe_c2)
         n_evals += 2
+
+        # A line search that cannot lower f, or whose step is at the rounding
+        # level of θ, carries no curvature information. Near an optimum where the
+        # supplied gradient is approximate (first-order GRAPE) the step shrinks to
+        # ~1e-14 and (s, y) is rounding noise; accepting such pairs used to grow
+        # the L-BFGS direction without bound (‖d‖ ~ 1e3 … Inf, which overflowed a
+        # propagator) while the loop ran on for every remaining iteration. Drop
+        # the curvature model and retry along −g; if that fails too, stop.
+        if !(f_new < f_cur) || α * norm(d, Inf) <= 1e-12 * max(1.0, norm(θ, Inf))
+            isempty(S) && break
+            empty!(S); empty!(Y); empty!(ρ_list)
+            continue
+        end
 
         s = α .* d
         θ .+= s
