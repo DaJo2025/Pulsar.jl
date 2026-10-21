@@ -13,8 +13,14 @@ a weighting w(jₖ).  The total objective is:
 The density-matrix co-state recursion (Pontryagin):
 
     Λ_{N+1} = 0
-    At checkpoint j_k:  Λ_{j_k} += 2 w_k (ρ_tar(j_k) - ρ(j_k + 1))
+    At checkpoint j_k:  Λ_{j_k} += w_k ρ_tar(j_k)†
     Backward step:      Λ_n = U_{n+1}† Λ_{n+1} U_{n+1}   (for n < j_k)
+
+The injection is the derivative of the reported w_k Re Tr(ρ_tar ρ). It used to
+be 2 w_k (ρ_tar − ρ), the derivative of the squared distance ‖ρ_tar − ρ‖²: the
+−ρ part contributes nothing (Tr(ρ[H, ρ]) = 0) but the factor 2 made the
+gradient exactly twice ∂Φ/∂w — wrong relative to penalties and to any other
+term in the same objective (fixed 2026-10-21).
 
 Gradient:
     ∂Φ/∂w[ctrl, n] = -Δt Re(i Tr(Λ_{n+1}† [H_ctrl, ρ(n+1)]))
@@ -122,8 +128,7 @@ for each TrackingPoint tp:
 Λ = 0   (N×N complex matrix)
 for n = n_t:-1:1
     if n is a checkpoint step j_k:
-        ρ_at_ckpt = ρ[n + 1]   # state *after* step n
-        Λ += 2 * w_k * (ρ_tar(j_k) - ρ_at_ckpt)
+        Λ += w_k * ρ_tar(j_k)†
     # Gradient at step n using co-state *before* backward step
     for k = 1:n_ctrl:
         H_ctrl_k = pwr * Op[k]
@@ -235,7 +240,7 @@ function _grape_tracking_cpu_threaded(waveform::Matrix{Float64}, ctrl)
             for n in n_t:-1:1
                 if haskey(ckpt_map, n)
                     for (w_k, ρ_tar_k) in ckpt_map[n]
-                        @. Lambda += 2.0 * w_k * (ρ_tar_k - rho_traj[n + 1])
+                        Lambda .+= w_k .* ρ_tar_k'     # ∂(w Re Tr(ρ_tar ρ))/∂ρ
                     end
                 end
 
@@ -475,8 +480,7 @@ function _grape_tracking_gpu_kernel(waveform::Matrix{Float64}, ctrl, to_gpu, ::T
                 # Inject tracking term at checkpoint (state after step n)
                 if haskey(ckpt_map, n)
                     for (w_k, ρ_tar_k) in ckpt_map[n]
-                        ρ_n1 = @view rho_traj_cpu[:, :, idx, n + 1]
-                        @. Lambda += 2.0 * w_k * (ρ_tar_k - ρ_n1)
+                        Lambda .+= w_k .* ρ_tar_k'     # ∂(w Re Tr(ρ_tar ρ))/∂ρ
                     end
                 end
 

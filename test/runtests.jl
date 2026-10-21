@@ -93,6 +93,9 @@ end
     section("Application – MR gate kernel (grape_gate_kernel)")
     include("Application/MR/GRAPEGateTests.jl")
 
+    section("Application – MR tracking kernel (grape_tracking_kernel)")
+    include("Application/MR/GRAPETrackingTests.jl")
+
     section("Algorithms – GRAPE")
     include("Algorithms/GRAPETests.jl")
 
