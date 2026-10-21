@@ -84,6 +84,7 @@ function bfgs_optimize(
     θ_best  = copy(θ)
     f_best  = f_cur
     converged = false
+    H_is_identity = true              # H carries no curvature yet (steepest descent)
 
     for iter in 1:max_iter
         gnorm = norm(g)
@@ -92,6 +93,10 @@ function bfgs_optimize(
         _converged_mode(convergence_mode, g_ok, f_ok) && (converged = true; break)
 
         d = -(H * g)         # descent direction
+        if !all(isfinite, d)             # degenerate curvature model
+            H = Matrix{Float64}(I, n, n); H_is_identity = true
+            d = -g
+        end
         bounded && begin
             # Project direction: don't move away from active bound
             for i in 1:n
@@ -107,6 +112,15 @@ function bfgs_optimize(
         α, f_new = _qn_ls!(θ_t, g_ls, f, grad!, θ, d, g, f_cur;
                            c1=wolfe_c1, c2=wolfe_c2)
         n_evals += 2
+
+        # A line search that cannot lower f, or whose step is at the rounding
+        # level of θ, carries no curvature information (see lbfgsb_optimize):
+        # drop the curvature model and retry along −g; if that fails too, stop.
+        if !(f_new < f_cur) || α * norm(d, Inf) <= 1e-12 * max(1.0, norm(θ, Inf))
+            H_is_identity && break
+            H = Matrix{Float64}(I, n, n); H_is_identity = true
+            continue
+        end
 
         s = α .* d
         θ .+= s
@@ -128,9 +142,10 @@ function bfgs_optimize(
             # BFGS rank-2 update (matrix form for small n)
             A = I - ρ * (s * y')
             H = A * H * A' + ρ * (s * s')
+            H_is_identity = false
         else
             # Reset on curvature failure
-            H = Matrix{Float64}(I, n, n)
+            H = Matrix{Float64}(I, n, n); H_is_identity = true
         end
 
         @. g = g_new
@@ -233,6 +248,10 @@ function lbfgs_optimize(
 
         m_used = length(S)
         _lbfgs_direction!(d, g, S, Y, ρ_list, m_used)
+        if !all(isfinite, d)             # degenerate curvature model
+            empty!(S); empty!(Y); empty!(ρ_list)
+            @. d = -g
+        end
 
         bounded && begin
             for i in 1:n
@@ -247,6 +266,15 @@ function lbfgs_optimize(
         α, f_new = _qn_ls!(θ_t, g_ls, f, grad!, θ, d, g, f_cur;
                            c1=wolfe_c1, c2=wolfe_c2)
         n_evals += 2
+
+        # A line search that cannot lower f, or whose step is at the rounding
+        # level of θ, carries no curvature information (see lbfgsb_optimize):
+        # drop the curvature model and retry along −g; if that fails too, stop.
+        if !(f_new < f_cur) || α * norm(d, Inf) <= 1e-12 * max(1.0, norm(θ, Inf))
+            isempty(S) && break
+            empty!(S); empty!(Y); empty!(ρ_list)
+            continue
+        end
 
         s = α .* d
         θ .+= s

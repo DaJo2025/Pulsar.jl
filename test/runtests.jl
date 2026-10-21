@@ -99,8 +99,8 @@ end
     section("Algorithms – Second-Order Methods")
     include("Algorithms/SecondOrderTests.jl")
 
-    section("Algorithms – L-BFGS-B Failed Line Searches")
-    include("Algorithms/LBFGSBRobustnessTests.jl")
+    section("Algorithms – Quasi-Newton Failed Line Searches")
+    include("Algorithms/QuasiNewtonRobustnessTests.jl")
 
     section("Algorithms – Constrained Optimization")
     include("Algorithms/ConstrainedTests.jl")

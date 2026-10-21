@@ -1,6 +1,6 @@
-# test/Algorithms/LBFGSBRobustnessTests.jl
+# test/Algorithms/QuasiNewtonRobustnessTests.jl
 # ===========================================
-# lbfgsb_optimize when the line search fails. Near an optimum whose supplied
+# lbfgsb_optimize, lbfgs_optimize and bfgs_optimize when the line search fails. Near an optimum whose supplied
 # gradient is approximate (first-order GRAPE), no step along it lowers f: the
 # line search shrinks the step to ~1e-14 and (s, y) is rounding noise. Accepting
 # those pairs grew the L-BFGS direction without bound (‖d‖ ≈ 1e3 here, Inf on a
@@ -13,19 +13,21 @@ using Pulsar
 using LinearAlgebra
 using Random
 
-@testset "lbfgsb_optimize: failed line searches" begin
-    @testset "biased gradient: stops instead of running on (n = $n, bias = $bias)" for (n, bias) in ((8, 1e-4), (40, 1e-5))
+@testset "quasi-Newton: failed line searches" begin
+    @testset "biased gradient, $(nameof(opt)): stops instead of running on (n = $n, bias = $bias)" for
+            opt in (lbfgsb_optimize, lbfgs_optimize, bfgs_optimize), (n, bias) in ((8, 1e-4), (40, 1e-5))
         c = collect(range(-1, 1; length = n))
         evals = Ref(0); maxθ = Ref(0.0)
         F(θ) = sum(abs2, θ .- c) + 0.1 * sum(abs2, sin.(3 .* θ))
         f(θ) = (evals[] += 1; maxθ[] = max(maxθ[], maximum(abs, θ)); F(θ))
         ∇F(θ) = 2 .* (θ .- c) .+ 0.6 .* sin.(3 .* θ) .* cos.(3 .* θ)
-        θb, fb, _ = lbfgsb_optimize(f, (g, θ) -> (g .= ∇F(θ) .+ bias; g), zeros(n);
-                                    max_iter = 300, tol = 1e-12, use_native = true)
+        kw = opt === lbfgsb_optimize ? (; use_native = true) : (;)
+        θb, fb, _ = opt(f, (g, θ) -> (g .= ∇F(θ) .+ bias; g), zeros(n);
+                        max_iter = 300, tol = 1e-12, kw...)
         @test evals[] < 1_000                    # was ~12 000 (every iteration a failed search)
         @test maxθ[] < 3                         # trial points stay near the iterates
-        _, fe, _ = lbfgsb_optimize(F, (g, θ) -> (g .= ∇F(θ); g), zeros(n);
-                                   max_iter = 300, tol = 1e-10, use_native = true)
+        _, fe, _ = opt(F, (g, θ) -> (g .= ∇F(θ); g), zeros(n);
+                       max_iter = 300, tol = 1e-10, kw...)
         @test fb ≤ fe + 1e-6                     # as good as the exact-gradient run
     end
 
