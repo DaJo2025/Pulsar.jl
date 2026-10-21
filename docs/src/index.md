@@ -52,6 +52,10 @@ layers may only depend on lower ones.
 
 ## What's new
 
+- **v0.2.2** ([release notes](release_notes/v0.2.2.md)) — batched GPU backend,
+  ensemble averaging, one shared implementation of the fidelity metrics, and
+  gradient and physics fixes, some of which change optimized results; the spin-I
+  RF-phase and neutral-atom conventions changed.
 - **v0.2.1** ([release notes](release_notes/v0.2.1.md)) — patch release
   finishing the Julia 1.12 threading fix sweep (`Threads.nthreads()` →
   `Threads.maxthreadid()` in PSO, GA, DE, and `ensemble_grad!`). v0.2.1 is
