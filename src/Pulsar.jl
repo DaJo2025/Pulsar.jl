@@ -129,6 +129,7 @@ include("Backend/Parallelism/CPUParallelization.jl")
 include("Computation/FidelityReductions.jl")
 include("Computation/EnsembleProbes.jl")    # input-state axis builders
 include("Computation/Propagators.jl")
+include("Computation/ExactStepGradient.jl")         # exact step derivative: Daleckii–Krein, Gauss–Legendre nodes
 include("Computation/PropagatorRegistry.jl")
 include("Computation/PropagatorCache.jl")
 include("Computation/EnsembleMap.jl")

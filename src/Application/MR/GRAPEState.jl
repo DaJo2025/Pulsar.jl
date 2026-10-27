@@ -68,7 +68,11 @@ Dispatches to a CPU-threaded or GPU implementation based on `ctrl.backend`
 2. Overlap:  z = ⟨ψ_targ | ψ(T)⟩
 3. Fidelity: |z|²  (`:state_squared`, Φ^S_Q) or Re(z) (`:state_real`, Φ^S_R)
 4. Backward: λ[n] = P[n]† λ[n+1],   λ[N+1] = ψ_targ
-5. Gradient (`:state_squared`): ∂F/∂w[k,n] = 2 dt pwr Im(z̄ ⟨λ[n+1]|Op[k]|ψ[n]⟩)
+5. Gradient: ∂F/∂w[k,n] = dt pwr Im(w(z) · inner[k,n]) with the metric's chain
+   weight w (2z̄ for `:state_squared`) and the EXACT step overlap
+   inner = ∫₀¹ ⟨λ[n+1]| e^{−i(1−s)H dt} Op[k] e^{−isH dt} |ψ[n]⟩ ds
+   (Computation/ExactStepGradient.jl) — not the first-order ⟨λ[n+1]|Op[k]|ψ[n]⟩,
+   whose O(dt‖H‖) error was a few percent at typical NMR steps.
 """
 function grape_state_kernel(waveform::Matrix{Float64}, ctrl)
     backend = _resolve_backend_auto(ctrl, waveform)
@@ -182,6 +186,11 @@ function _grape_cpu(waveform::Matrix{Float64}, ctrl)
     λ_bufs    = [Matrix{ComplexF64}(undef, dim, n_t + 1) for _ in 1:n_th]
     # Gradient inner-product scratch vector
     tmp_bufs  = [Vector{ComplexF64}(undef, dim) for _ in 1:n_th]
+    # Per-step eigendecomposition (exact step derivative) + its scratch
+    V_bufs     = [[Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_t] for _ in 1:n_th]
+    E_bufs     = [[Vector{Float64}(undef, dim) for _ in 1:n_t] for _ in 1:n_th]
+    ws_bufs    = [StepGradWorkspace(dim) for _ in 1:n_th]
+    inner_bufs = [Vector{ComplexF64}(undef, n_ctrl) for _ in 1:n_th]
 
     # ── Prevent BLAS/LAPACK from spawning extra threads inside @threads ────────
     # Without this, each eigen() call multiplies the OS thread count by
@@ -198,16 +207,26 @@ function _grape_cpu(waveform::Matrix{Float64}, ctrl)
         VD_buf         = VD_bufs[tid]
         ψ_fwd          = ψ_bufs[tid]
         λ_mat          = λ_bufs[tid]
-        tmp            = tmp_bufs[tid]
+        Vs             = V_bufs[tid]
+        Es             = E_bufs[tid]
+        ws             = ws_bufs[tid]
+        inner_v        = inner_bufs[tid]
         grad_local     = grad_buf[idx]
 
         # ── Build propagators in-place: H_buf = H_drift + pwr·Σ w[k,n]·Op[k] ─
+        # The eigendecomposition is kept for the exact step derivative; P is
+        # built from it exactly as _expm_neg_i_into! would (closed form at dim 2).
         for n in 1:n_t
             H_buf .= H_drift
             for k in 1:n_ctrl
                 @. H_buf += pwr * waveform[k, n] * ctrl.operators[k]
             end
-            _expm_neg_i_into!(Ps[n], H_buf, ctrl.pulse_dt[n], VD_buf)
+            _herm_eigen_into!(Vs[n], Es[n], H_buf)
+            if dim == 2
+                _expm_neg_i_into!(Ps[n], H_buf, ctrl.pulse_dt[n], VD_buf)
+            else
+                _propagator_from_eigen!(Ps[n], Vs[n], Es[n], ctrl.pulse_dt[n], VD_buf)
+            end
         end
 
         fid_local = 0.0
@@ -234,16 +253,15 @@ function _grape_cpu(waveform::Matrix{Float64}, ctrl)
                 mul!(view(λ_mat, :, n), Ps[n]', view(λ_mat, :, n + 1))
             end
 
-            # ── Gradient accumulation ─────────────────────────────────────────
+            # ── Gradient accumulation (exact step derivative) ─────────────────
             for n in 1:n_t
                 dt_n = ctrl.pulse_dt[n]
-                λ_v  = view(λ_mat, :, n + 1)
-                ψ_v  = view(ψ_fwd, :, n)
+                _exact_step_overlaps!(inner_v, Vs[n], Es[n], dt_n,
+                                      view(λ_mat, :, n + 1), view(ψ_fwd, :, n),
+                                      ctrl.operators, ws)
                 for k in 1:n_ctrl
-                    mul!(tmp, ctrl.operators[k], ψ_v)
-                    inner = dot(λ_v, tmp)
                     grad_local[k, n] += fidelity_grad_prefactor(
-                        z, inner, dt_n * pwr; type = ctrl.fidelity)
+                        z, inner_v[k], dt_n * pwr; type = ctrl.fidelity)
                 end
             end
         end
@@ -284,11 +302,15 @@ Strategy (one batch fuses every ensemble member × timestep):
    eigensolve on GPU).
 3. `batched_matvec` runs the forward and backward sweeps — sequential over time,
    batched over members × state-pairs.
-4. The per-step gradient overlaps are accumulated from the (downloaded) state
-   and co-state snapshots.
+4. The exact per-step gradient overlaps ∫₀¹⟨χ(s)|Op|ψ(s)⟩ds are integrated by
+   Gauss–Legendre quadrature in s from the state and co-state snapshots, with
+   propagators at the nodes from the same batched build (no eigenvectors
+   needed on the device).
 
-Bit-for-bit equal to [`_grape_cpu`](@ref) on a `CPUBackend` (validated in the
-GPU-batched tests), so the GPU result inherits that correctness.
+Fidelity bit-for-bit equal to [`_grape_cpu`](@ref) on a `CPUBackend`; the
+gradient agrees with its closed-form (Daleckii–Krein) overlaps to quadrature
+accuracy, ~1e-12 relative (validated in the GPU-batched and exact-gradient
+tests), so the GPU result inherits that correctness.
 """
 function _grape_batched(waveform::Matrix{Float64}, ctrl, backend)
     n_ctrl  = size(waveform, 1)
@@ -368,24 +390,55 @@ function _grape_batched(waveform::Matrix{Float64}, ctrl, backend)
         fidelity_sum += state_fidelity(ctrl.rho_targ[p], ψf; type = ctrl.fidelity)
     end
 
-    # 4. Gradient accumulation (hoisted; threaded over time steps).
+    # 4a. Exact step overlaps inner[k,p,m,n] = ∫₀¹ ⟨χ(s)|Op_k|ψ(s)⟩ ds with
+    #     ψ(s) = U(s)·ψ[n], χ(s) = U(1−s)†·λ[n+1], U(s) = exp(−i·s·H·dt)
+    #     (Computation/ExactStepGradient.jl), by Gauss–Legendre in s sized from
+    #     ‖H‖·dt. Only the batched primitives are used: propagators of the same
+    #     H at the node steps s·dt and batched matvecs. The node set is symmetric
+    #     (s ↔ 1 − s), so each pair of nodes shares two propagator batches.
+    nodes, wts = _step_quadrature(_max_step_spread(drift_stack, ops_c, coeff, dt_vec, n_outer))
+    K      = length(nodes)
+    ψ_snap = _to_device_like(U, reshape(ψ_all, dim, n_pairs, N))   # columns aligned with U
+    λ_snap = _to_device_like(U, reshape(λ_all, dim, n_pairs, N))
+    inner  = zeros(ComplexF64, n_ctrl, n_pairs, N)
+    tmps   = [Vector{ComplexF64}(undef, dim) for _ in 1:Threads.maxthreadid()]
+    function _add_node!(wq, Uψ, Uχ)
+        ψs = Array(batched_matvec(backend, Uψ, ψ_snap))
+        χs = Array(batched_matvec(backend, Uχ, λ_snap; adjoint = true))
+        Threads.@threads :static for col in 1:N
+            tmp = tmps[Threads.threadid()]
+            @inbounds for p in 1:n_pairs
+                ψ_v = @view ψs[:, p, col]
+                χ_v = @view χs[:, p, col]
+                for k in 1:n_ctrl
+                    mul!(tmp, ops_c[k], ψ_v)
+                    inner[k, p, col] += wq * dot(χ_v, tmp)
+                end
+            end
+        end
+    end
+    for j in 1:cld(K, 2)
+        jj = K + 1 - j                                   # s_jj = 1 − s_j
+        Ua = batched_herm_propagators(backend, H, nodes[j] .* dt_vec)
+        Ub = jj == j ? Ua : batched_herm_propagators(backend, H, nodes[jj] .* dt_vec)
+        _add_node!(wts[j], Ua, Ub)                       # node j:  ψ via U(s_j),  χ via U(1 − s_j)
+        jj == j || _add_node!(wts[jj], Ub, Ua)
+    end
+    inner4 = reshape(inner, n_ctrl, n_pairs, n_outer, n_t)
+
+    # 4b. Fold the metric chain factor and reduce over (p, m), threaded over
+    #     time steps.
     grad_parts = [zeros(Float64, n_ctrl, n_t) for _ in 1:Threads.maxthreadid()]
     Threads.@threads :static for n in 1:n_t
-        tid  = Threads.threadid()
-        g    = grad_parts[tid]
+        g    = grad_parts[Threads.threadid()]
         dt_n = ctrl.pulse_dt[n]
-        tmp  = Vector{ComplexF64}(undef, dim)
         @inbounds for m in 1:n_outer
             pwr_m = ens_pairs[m][2]
             for p in 1:n_pairs
-                λ_v = @view λ_all[:, p, m, n]
-                ψ_v = @view ψ_all[:, p, m, n]
                 z_i = z[p, m]
                 for k in 1:n_ctrl
-                    mul!(tmp, ops_c[k], ψ_v)
-                    inner = dot(λ_v, tmp)
                     g[k, n] += fidelity_grad_prefactor(
-                        z_i, inner, dt_n * pwr_m; type = ctrl.fidelity)
+                        z_i, inner4[k, p, m, n], dt_n * pwr_m; type = ctrl.fidelity)
                 end
             end
         end
@@ -638,14 +691,22 @@ function grape_state_kernel_single(waveform::Matrix{Float64},
     VD_buf = Matrix{ComplexF64}(undef, dim, dim)
     ψ_fwd  = Matrix{ComplexF64}(undef, dim, n_t + 1)
     λ_mat  = Matrix{ComplexF64}(undef, dim, n_t + 1)
-    tmp    = Vector{ComplexF64}(undef, dim)
+    Vs     = [Matrix{ComplexF64}(undef, dim, dim) for _ in 1:n_t]
+    Es     = [Vector{Float64}(undef, dim) for _ in 1:n_t]
+    ws     = StepGradWorkspace(dim)
+    inner  = Vector{ComplexF64}(undef, n_ctrl)
 
     for n in 1:n_t
         H_buf .= H_drift
         for k in 1:n_ctrl
             @. H_buf += pwr * waveform[k, n] * ctrl.operators[k]
         end
-        _expm_neg_i_into!(Ps[n], H_buf, ctrl.pulse_dt[n], VD_buf)
+        _herm_eigen_into!(Vs[n], Es[n], H_buf)
+        if dim == 2
+            _expm_neg_i_into!(Ps[n], H_buf, ctrl.pulse_dt[n], VD_buf)
+        else
+            _propagator_from_eigen!(Ps[n], Vs[n], Es[n], ctrl.pulse_dt[n], VD_buf)
+        end
     end
 
     ψ_fwd[:, 1] .= rho_init
@@ -665,13 +726,12 @@ function grape_state_kernel_single(waveform::Matrix{Float64},
     grad = zeros(Float64, n_ctrl, n_t)
     for n in 1:n_t
         dt_n = ctrl.pulse_dt[n]
-        λ_v  = view(λ_mat, :, n + 1)
-        ψ_v  = view(ψ_fwd, :, n)
+        _exact_step_overlaps!(inner, Vs[n], Es[n], dt_n,
+                              view(λ_mat, :, n + 1), view(ψ_fwd, :, n),
+                              ctrl.operators, ws)
         for k in 1:n_ctrl
-            mul!(tmp, ctrl.operators[k], ψ_v)
-            inner = dot(λ_v, tmp)
             grad[k, n] = fidelity_grad_prefactor(
-                z, inner, dt_n * pwr; type = ctrl.fidelity)
+                z, inner[k], dt_n * pwr; type = ctrl.fidelity)
         end
     end
 
@@ -775,6 +835,7 @@ function _grape_cpu_2x2_bloch(waveform::Matrix{Float64}, ctrl)
     axis_bufs  = [Matrix{Float64}(undef, 3, n_t)     for _ in 1:n_th]
     cs_bufs    = [Vector{Float64}(undef, n_t)         for _ in 1:n_th]
     sn_bufs    = [Vector{Float64}(undef, n_t)         for _ in 1:n_th]
+    θ_bufs     = [Vector{Float64}(undef, n_t)         for _ in 1:n_th]
 
     Threads.@threads :static for idx in 1:n_outer
         tid = Threads.threadid()
@@ -785,6 +846,7 @@ function _grape_cpu_2x2_bloch(waveform::Matrix{Float64}, ctrl)
         axis     = axis_bufs[tid]
         cs_arr   = cs_bufs[tid]
         sn_arr   = sn_bufs[tid]
+        θ_arr    = θ_bufs[tid]
         grad_local = grad_buf[idx]
 
         # ── Build per-timestep rotation axis n̂ and (cos, sin) of θ ──────────
@@ -799,6 +861,7 @@ function _grape_cpu_2x2_bloch(waveform::Matrix{Float64}, ctrl)
             end
             mag = sqrt(b*b + c*c + d*d)        # = |ω|/2 with ω = 2(b,c,d)
             θ   = 2.0 * mag * ctrl.pulse_dt[n]
+            θ_arr[n]  = θ
             cs_arr[n] = cos(θ)
             sn_arr[n] = sin(θ)
             if mag < 1e-30
@@ -840,28 +903,40 @@ function _grape_cpu_2x2_bloch(waveform::Matrix{Float64}, ctrl)
                                   λ_traj[1, n+1], λ_traj[2, n+1], λ_traj[3, n+1])
             end
 
-            # ── Gradient: ∂F/∂u[k,n] += dt·pwr·(b_k,c_k,d_k)·(r_mid × λ_mid)
+            # ── Gradient (exact): ∂F/∂u[k,n] = dt·pwr·(b_k,c_k,d_k)·J_lᵀ(r[n+1] × λ[n+1])
             #
-            # The standard first-order GRAPE in Hilbert space uses ⟨λ[n+1]|H_j|ψ[n]⟩
-            # (mismatched times), which works only because of the trace identity
-            #   2 Im(z̄ ⟨λ|H_j|ψ⟩) = (b,c,d) · (r_ψ × r_λ)
-            # holding when ⟨ψ|λ⟩ = z. In Bloch space we have no z, so we MUST use
-            # consistent times. The midpoint average minimises O(θ²) per-step error
-            # and matches the slow Hilbert path to better than 1e-3 for typical dt.
+            # The step is the rotation R = exp([φ]×), φ = θ n̂ = 2·dt·(b,c,d), and
+            # dR = [J_l(φ)·dφ]× R with the SO(3) left Jacobian
+            #   J_l(φ) = I + a [φ]× + c [φ]×²,  a = (1 − cos θ)/θ²,  c = (θ − sin θ)/θ³.
+            # With F = ½(1 + λ[n+1]·R r[n]) and ∂φ/∂u_k = 2·dt·pwr·(b_k,c_k,d_k) this is
+            # exact; it replaces a midpoint average whose error was O(θ²).
             @inbounds for n in 1:n_t
-                rx = 0.5 * (r_traj[1, n] + r_traj[1, n+1])
-                ry = 0.5 * (r_traj[2, n] + r_traj[2, n+1])
-                rz = 0.5 * (r_traj[3, n] + r_traj[3, n+1])
-                lx = 0.5 * (λ_traj[1, n] + λ_traj[1, n+1])
-                ly = 0.5 * (λ_traj[2, n] + λ_traj[2, n+1])
-                lz = 0.5 * (λ_traj[3, n] + λ_traj[3, n+1])
-                cx = ry*lz - rz*ly
-                cy = rz*lx - rx*lz
-                cz = rx*ly - ry*lx
+                rx = r_traj[1, n+1]; ry = r_traj[2, n+1]; rz = r_traj[3, n+1]
+                lx = λ_traj[1, n+1]; ly = λ_traj[2, n+1]; lz = λ_traj[3, n+1]
+                vx = ry*lz - rz*ly                    # v = r[n+1] × λ[n+1]
+                vy = rz*lx - rx*lz
+                vz = rx*ly - ry*lx
+                θ  = θ_arr[n]
+                φx = θ * axis[1, n]; φy = θ * axis[2, n]; φz = θ * axis[3, n]
+                if θ < 1e-2
+                    θ2 = θ * θ
+                    a = 0.5 - θ2 / 24 + θ2 * θ2 / 720
+                    c = 1 / 6 - θ2 / 120 + θ2 * θ2 / 5040
+                else
+                    h = sin(θ / 2) / (θ / 2)
+                    a = 0.5 * h * h
+                    c = (θ - sn_arr[n]) / (θ * θ * θ)
+                end
+                # J_lᵀ v = v − a (φ × v) + c φ × (φ × v)
+                wx = φy*vz - φz*vy; wy = φz*vx - φx*vz; wz = φx*vy - φy*vx       # φ × v
+                ux = φy*wz - φz*wy; uy = φz*wx - φx*wz; uz = φx*wy - φy*wx       # φ × (φ × v)
+                jx = vx - a*wx + c*ux
+                jy = vy - a*wy + c*uy
+                jz = vz - a*wz + c*uz
                 dt_pwr = ctrl.pulse_dt[n] * pwr
                 for k in 1:n_ctrl
                     bk, ck, dk = op_pauli[k]
-                    grad_local[k, n] += dt_pwr * (bk*cx + ck*cy + dk*cz)
+                    grad_local[k, n] += dt_pwr * (bk*jx + ck*jy + dk*jz)
                 end
             end
         end

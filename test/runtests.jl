@@ -96,6 +96,9 @@ end
     section("Application – MR tracking kernel (grape_tracking_kernel)")
     include("Application/MR/GRAPETrackingTests.jl")
 
+    section("Application – MR state kernel exact gradient")
+    include("Application/MR/StateKernelExactGradientTests.jl")
+
     section("Algorithms – GRAPE")
     include("Algorithms/GRAPETests.jl")
 

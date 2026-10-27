@@ -122,7 +122,7 @@ using Test, LinearAlgebra, Random
     end
 
     # ── Production parity: _grape_batched(CPUBackend) == _grape_cpu ────────────
-    @testset "_grape_batched matches _grape_cpu (bit-for-bit on CPU)" begin
+    @testset "_grape_batched agrees with _grape_cpu on CPU" begin
         Random.seed!(21)
         dim, n_ctrl, n_t = 4, 2, 30
         drifts = [rand_herm(dim) for _ in 1:3]

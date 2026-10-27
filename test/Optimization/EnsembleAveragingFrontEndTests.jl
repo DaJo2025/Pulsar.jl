@@ -140,10 +140,10 @@ using Random
         Fq, Gq = ensemble_averaging(EnsembleAveraging(ens.axes...; probes = StateProbes([ψi], [ψt]),
                                                       metric = :state_real), qs, seq)
         @test Fe ≈ Fq atol = 1e-12
-        # ∂F/∂w on both sides (Hc = pwr·Op). Both are first-order GRAPE gradients
-        # with O(dt·‖H‖) error; the MR kernel's constant is ~4× larger (on a smooth
-        # pulse at dt·Ω ≈ 0.1: 3.5% vs 0.8% against finite differences, both → 0
-        # linearly in dt). So compare them at a step where that error is small.
+        # ∂F/∂w on both sides (Hc = pwr·Op). The MR kernel's gradient is exact;
+        # the generic one is first-order GRAPE with O(dt·‖H‖) error (0.8% against
+        # finite differences on a smooth pulse at dt·Ω ≈ 0.1, → 0 linearly in dt).
+        # So compare them at a step where that error is small.
         dtf = dt / 100
         c_f = MRControl(; drifts = [hamiltonian(sys)], rho_init = [ψi], rho_targ = [ψt],
                         pwr_levels = [pwr], ensemble = ens, common..., pulse_dt = fill(dtf, n_t))
